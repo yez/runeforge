@@ -1,0 +1,7 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "runeforge"
+require "runeforge/cli"
+
+Runeforge::CLI.start(ARGV)

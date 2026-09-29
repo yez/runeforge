@@ -1,0 +1,10 @@
+/.bundle/
+/pkg/
+/tmp/
+/coverage/
+*.gem
+*.db
+*.db-shm
+*.db-wal
+runeforge.yml
+Gemfile.lock

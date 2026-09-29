@@ -1,0 +1,40 @@
+# Copy to runeforge.yml. Secrets come from environment variables, never from this file.
+
+database: sqlite://runeforge.db        # or postgres://user@host/runeforge for workers on several hosts
+home: ~/.runeforge                     # host clones, logs and per-attempt workspaces
+
+lease_seconds: 300
+heartbeat_seconds: 30
+poll_seconds: 2
+max_deliveries: 3
+
+budgets:
+  max_attempts: 5
+  token_budget: 2000000                # per task, across every planner and coder run
+  max_task_minutes: 240
+
+sandbox:
+  mode: docker                         # docker | podman | none (trusted local use only)
+  image: runeforge/general:latest        # per-repo images can be set with `runeforge repo add --image`
+  network: bridge                      # use a network with egress rules to restrict outbound traffic
+  cpus: 2
+  memory: 4g
+  pids: 512
+  timeout_seconds: 1800
+
+agent:
+  adapter: claude_code                 # claude_code | codex | aider | command
+  model: null
+  key_env: RUNEFORGE_LLM_API_KEY       # host variable with a separate, spend-limited key
+
+github:
+  token_env: GITHUB_TOKEN
+
+jira:
+  url: https://example.atlassian.net
+  email_env: JIRA_EMAIL
+  token_env: JIRA_API_TOKEN
+  webhook_secret_env: RUNEFORGE_WEBHOOK_SECRET
+  trigger_label: runeforge
+  project_repos:
+    DEV: api

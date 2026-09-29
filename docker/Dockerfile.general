@@ -1,0 +1,25 @@
+# General-purpose agent image: common language toolchains plus git and the Claude Code CLI.
+# Runeforge builds this as runeforge/general:latest. When a project needs more, Runeforge asks
+# which apt packages to add and builds a per-project image on top of this one.
+FROM debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
+    GOPATH=/tmp/go \
+    npm_config_cache=/tmp/.npm
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates curl git build-essential pkg-config \
+      python3 python3-pip python3-venv \
+      nodejs npm \
+      ruby-full ruby-bundler \
+      golang \
+      sqlite3 jq unzip \
+ && rm -rf /var/lib/apt/lists/* \
+ && npm install -g @anthropic-ai/claude-code \
+ && ln -sf /usr/bin/python3 /usr/local/bin/python
+
+# Runeforge runs containers as the host user's uid with a read-only root filesystem,
+# HOME=/tmp/home and the workspace mounted at /workspace.
+WORKDIR /workspace

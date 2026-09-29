@@ -1,0 +1,10 @@
+#!/bin/sh
+# One command from a fresh checkout to a running Runeforge: installs gems, then runs
+# `runeforge init` (config, database, container runtime, agent image, background processes).
+# Any arguments are passed to `runeforge init`, e.g. bin/setup --sandbox none
+set -e
+cd "$(dirname "$0")/.."
+
+command -v bundle >/dev/null 2>&1 || gem install bundler
+bundle install
+exec bundle exec exe/runeforge init "$@"
