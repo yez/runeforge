@@ -30,6 +30,22 @@ RSpec.describe "Ticket to pull request" do
       expect(task).to include(tokens_used: 240, cost_cents: 2, attempts: 1)
     end
 
+    it "keeps installed dependencies and caches out of the coder's patch" do
+      code = <<~SH
+        #{Helpers::CODE_GREETING}
+        mkdir -p node_modules/left-pad .venv/lib __pycache__
+        echo x > node_modules/left-pad/index.js
+        echo x > .venv/lib/site.py
+        echo x > __pycache__/greeting.cpython-311.pyc
+      SH
+      env = env_with(code:)
+      create(env)
+      task = drive(env, "T-1", until_status: "done")
+      code_done = env.tasks.messages("T-1").find { |msg| msg.type == "code.done" }
+      expect(code_done.payload["changed_paths"]).to eq(["lib/greeting.txt"])
+      expect(git("ls-tree", "-r", "--name-only", task[:head_sha])).not_to include("node_modules", ".venv", "__pycache__")
+    end
+
     it "feeds test failures back to the coder and passes on the next attempt" do
       code = <<~SH
         mkdir -p lib

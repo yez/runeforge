@@ -17,13 +17,20 @@ module Runeforge
     # Runs in the trusted worker process. Anything that executes agent-written code goes
     # through `sandbox`; everything read back from a workspace is treated as untrusted data.
     class Base
+      # Dependency and build folders agents create by installing packages or running tests. They
+      # never belong in a patch, whatever the project's .gitignore says.
+      PATCH_EXCLUDES = %w[
+        .runeforge/ node_modules/ .venv/ venv/ __pycache__/ *.pyc .pytest_cache/ .mypy_cache/ .ruff_cache/
+        .tox/ vendor/bundle/ .bundle/ target/ .gradle/ .next/ .nuxt/ .turbo/ .cache/ coverage/
+      ].freeze
+
       # Shell run inside the sandbox around the agent CLI. It snapshots the exported tree in a
       # throwaway repo, runs the agent, then writes everything it changed to .runeforge/changes.patch.
-      AGENT_SCRIPT = <<~'SH'
+      AGENT_SCRIPT = <<~SH
         set -u
         mkdir -p "$HOME" 2>/dev/null
         g() { git -c core.hooksPath=/dev/null -c commit.gpgsign=false -c user.name=runeforge -c user.email=runeforge@localhost "$@"; }
-        { g init -q . && printf '.runeforge/\n' >> .git/info/exclude && g add -A && g commit -q --allow-empty -m runeforge-base; } >/dev/null 2>&1 \
+        { g init -q . && printf '%%s\\n' #{PATCH_EXCLUDES.map { |pattern| "'#{pattern}'" }.join(' ')} >> .git/info/exclude && g add -A && g commit -q --allow-empty -m runeforge-base; } >/dev/null 2>&1 \\
           || { echo "runeforge: could not initialise the workspace repository" >&2; exit 97; }
         base=$(g rev-parse HEAD)
         RUNEFORGE_PROMPT="$(cat .runeforge/prompt.md)"

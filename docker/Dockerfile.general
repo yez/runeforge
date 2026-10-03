@@ -21,5 +21,10 @@ RUN apt-get update \
  && ln -sf /usr/bin/python3 /usr/local/bin/python
 
 # Runeforge runs containers as the host user's uid with a read-only root filesystem,
-# HOME=/tmp/home and the workspace mounted at /workspace.
+# HOME=/tmp/home and the workspace mounted at /workspace. Package managers that would write to
+# system directories install under /tmp instead.
+ENV GEM_HOME=/tmp/gems \
+    NPM_CONFIG_PREFIX=/tmp/npm-global \
+    PATH=/tmp/gems/bin:/tmp/npm-global/bin:/tmp/home/.local/bin:/tmp/go/bin:$PATH
+
 WORKDIR /workspace
