@@ -12,14 +12,22 @@ module Runeforge
     # Each open stream holds a server thread, so serve it from a threaded server. When
     # RUNEFORGE_DASHBOARD_TOKEN is set, /api requires it as ?token= or an X-Runeforge-Token header.
     class DashboardApp
-      PAGE = File.expand_path("dashboard/index.html", __dir__)
+      # The pages it can serve: the default view and the war camp (an RTS-style view of the same data).
+      PAGES = {
+        dashboard: File.expand_path("dashboard/index.html", __dir__),
+        warcamp: File.expand_path("warcamp/index.html", __dir__)
+      }.freeze
+      ASSETS = File.expand_path("warcamp/assets", __dir__)
+      ASSET_NAME = /\A[A-Za-z0-9_-]+\.(webp|json)\z/
+      ASSET_TYPES = { "webp" => "image/webp", "json" => "application/json" }.freeze
       SSE_HEADERS = {
         "content-type" => "text/event-stream", "cache-control" => "no-cache", "x-accel-buffering" => "no"
       }.freeze
       TASK_ROUTE = %r{\A/api/tasks/([^/]+)(?:/(cancel|retry))?\z}
 
-      def initialize(env, hub: nil, keepalive_seconds: 15, token: ENV.fetch("RUNEFORGE_DASHBOARD_TOKEN", nil))
+      def initialize(env, page: :dashboard, hub: nil, keepalive_seconds: 15, token: ENV.fetch("RUNEFORGE_DASHBOARD_TOKEN", nil))
         @env = env
+        @page = PAGES.fetch(page.to_sym) { raise Error, "unknown dashboard page #{page}" }
         @hub = hub || EventHub.new(env.db).start
         @keepalive = keepalive_seconds
         @token = token
@@ -33,6 +41,7 @@ module Runeforge
         request = Rack::Request.new(rack_env)
         path = request.path_info
         return page if request.get? && ["", "/", "/index.html"].include?(path)
+        return asset(path.delete_prefix("/assets/")) if request.get? && path.start_with?("/assets/")
         return json(404, error: "not found") unless path.start_with?("/api/")
         return json(401, error: "bad token") unless authorized?(request)
 
@@ -125,7 +134,16 @@ module Runeforge
         given && Rack::Utils.secure_compare(given, @token)
       end
 
-      def page = [200, { "content-type" => "text/html; charset=utf-8", "cache-control" => "no-cache" }, [File.read(PAGE)]]
+      def page = [200, { "content-type" => "text/html; charset=utf-8", "cache-control" => "no-cache" }, [File.read(@page)]]
+
+      # Art for the war camp. Only plain file names from the assets folder, so no path escapes it.
+      def asset(name)
+        file = File.join(ASSETS, name)
+        return json(404, error: "not found") unless name.match?(ASSET_NAME) && File.file?(file)
+
+        [200, { "content-type" => ASSET_TYPES.fetch(File.extname(name).delete(".")), "cache-control" => "max-age=3600" },
+         [File.binread(file)]]
+      end
 
       def json(status, body)
         [status, { "content-type" => "application/json" }, [JSON.generate(body)]]

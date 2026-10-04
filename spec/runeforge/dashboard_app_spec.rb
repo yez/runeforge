@@ -112,3 +112,36 @@ RSpec.describe Runeforge::Web::DashboardApp do
     end
   end
 end
+
+RSpec.describe Runeforge::Web::DashboardApp, "war camp" do
+  let(:backend) { "sqlite" }
+  let(:env) { build_env }
+  let(:hub) { Runeforge::Web::EventHub.new(db) }
+
+  def get(path, page: :warcamp) = Rack::MockRequest.new(described_class.new(env, page:, hub:)).get(path)
+
+  it "serves the war camp page and its art" do
+    expect(get("/").body).to include("<title>Runeforge War Camp</title>")
+    meta = JSON.parse(get("/assets/assets.json").body)
+    expect(meta["orcs"].keys).to contain_exactly("regular", "elite", "heavy", "archer")
+
+    meta["orcs"].values.map { |orc| orc["src"] }
+        .concat(meta["buildings"].values.map { |b| b["src"] }, meta["ui"].values).each do |src|
+      response = get("/assets/#{src}")
+      expect(response.status).to eq(200), src
+      expect(response.content_type).to eq("image/webp")
+    end
+  end
+
+  it "only serves plain asset file names" do
+    expect(get("/assets/../dashboard_app.rb").status).to eq(404)
+    expect(get("/assets/%2e%2e%2fdashboard_app.rb").status).to eq(404)
+    expect(get("/assets/missing.webp").status).to eq(404)
+    expect(get("/assets/assets.txt").status).to eq(404)
+  end
+
+  it "keeps the default page unless asked" do
+    expect(get("/", page: :dashboard).body).to include("<title>Runeforge</title>")
+    expect { described_class.new(env, page: :nope, hub:) }.to raise_error(Runeforge::Error, /unknown dashboard page/)
+  end
+end
