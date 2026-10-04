@@ -9,7 +9,7 @@ module Runeforge
 
     INIT_MARKER = "# Written by `runeforge init`."
     HOME_ENTRIES = %w[repos logs workspaces run runeforge.db runeforge.db-wal runeforge.db-shm].freeze
-    TABLES = %i[runeforge_workers runeforge_messages runeforge_tasks runeforge_repos runeforge_schema_info].freeze
+    TABLES = %i[runeforge_events runeforge_workers runeforge_messages runeforge_tasks runeforge_repos runeforge_schema_info].freeze
 
     attr_reader :kept
 

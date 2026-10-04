@@ -20,6 +20,14 @@ RSpec.describe Runeforge::Sandbox do
       expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 10
     end
 
+    it "hands output to on_output as it arrives" do
+      chunks = []
+      result = sandbox.run(workdir: Dir.pwd, script: "echo out; echo err >&2",
+                           on_output: ->(chunk, stream) { chunks << [stream, chunk] })
+      expect(chunks).to contain_exactly(["stdout", "out\n"], ["stderr", "err\n"])
+      expect(result.stdout).to eq("out\n")
+    end
+
     it "reports the exit status" do
       expect(sandbox.run(workdir: tmpdir, script: "exit 3").exit_code).to eq(3)
     end

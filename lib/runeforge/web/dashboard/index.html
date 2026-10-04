@@ -1,0 +1,516 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Runeforge</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --iron: #1c2028;
+    --iron-raised: #252a34;
+    --iron-edge: #353c49;
+    --ash: #8a93a3;
+    --text: #e4e1da;
+    --ember: #c2410c;
+    --flame: #f59e0b;
+    --white-hot: #fff1c1;
+    --brass: #c9a227;
+    --crack: #e5484d;
+    --steel: #6b8fd6;
+    --ui: "Barlow Semi Condensed", "Arial Narrow", system-ui, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--iron);
+    color: var(--text);
+    font: 400 15px/1.4 var(--ui);
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
+  }
+  button { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--flame); outline-offset: 2px; }
+
+  /* Header */
+  .top {
+    display: flex; align-items: baseline; gap: 20px; flex-wrap: wrap;
+    padding: 14px 20px 12px;
+    border-bottom: 1px solid var(--iron-edge);
+  }
+  .top h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: .01em; }
+  .stat { color: var(--ash); font-size: 15px; }
+  .stat b { color: var(--text); font-weight: 600; }
+  .conn { margin-left: auto; color: var(--ash); display: flex; align-items: center; gap: 8px; }
+  .conn i { width: 8px; height: 8px; border-radius: 50%; background: var(--ash); }
+  .conn.live i { background: var(--flame); box-shadow: 0 0 8px var(--flame); }
+  .conn.down i { background: var(--crack); }
+  .dry { border: 1px solid var(--steel); color: var(--steel); padding: 0 8px; border-radius: 3px; font-size: 13px; }
+
+  main {
+    display: grid; grid-template-columns: minmax(0, 1fr) 360px; min-height: 0;
+  }
+
+  /* The forge: role columns standing on the supervisor bar */
+  .forge { position: relative; display: grid; grid-template-rows: 1fr auto; min-height: 0; padding: 18px 18px 18px 20px; }
+  .roles { display: grid; grid-template-columns: repeat(var(--cols, 5), minmax(0, 1fr)); gap: 12px; min-height: 0; }
+  .role {
+    display: flex; flex-direction: column; min-height: 0;
+    background: var(--iron-raised); border: 1px solid var(--iron-edge); border-radius: 6px 6px 0 0;
+    border-bottom: none;
+  }
+  .role header { padding: 10px 12px 8px; display: flex; align-items: baseline; gap: 8px; border-bottom: 1px solid var(--iron-edge); }
+  .role h2 { margin: 0; font-size: 19px; font-weight: 600; text-transform: capitalize; }
+  .role .queue { margin-left: auto; color: var(--ash); font-size: 13px; }
+  .role .queue b { color: var(--text); }
+  .role .workers { color: var(--ash); font-size: 13px; padding: 6px 12px 0; }
+  .jobs { padding: 8px; display: flex; flex-direction: column; gap: 8px; overflow: auto; flex: 1; }
+  .idle { color: var(--ash); font-size: 14px; padding: 6px 4px; }
+
+  .job {
+    --heat: 0;
+    border-radius: 4px; padding: 8px 10px 9px;
+    background: color-mix(in oklab, var(--iron) 70%, var(--ember) calc(var(--heat) * 30%));
+    border: 1px solid color-mix(in oklab, var(--ember), var(--white-hot) calc(var(--heat) * 100%));
+    box-shadow: 0 0 calc(4px + var(--heat) * 18px) color-mix(in oklab, var(--ember) 60%, var(--flame) calc(var(--heat) * 100%));
+    transition: box-shadow .8s linear, border-color .8s linear, background .8s linear;
+    cursor: pointer;
+  }
+  .job.pending { --heat: 0; border-style: dashed; border-color: var(--iron-edge); box-shadow: none; background: transparent; cursor: default; }
+  .job.selected, .task.selected { outline: 2px solid var(--steel); outline-offset: 1px; }
+  .job .line1 { display: flex; gap: 8px; align-items: baseline; }
+  .job .tid { font-weight: 600; white-space: nowrap; }
+  .job .type { color: var(--ash); font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .job .clock { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--white-hot); }
+  .job .who { color: var(--ash); font-size: 13px; }
+  .job pre {
+    margin: 6px 0 0; font: 400 11.5px/1.45 var(--mono); color: #cfc8b8;
+    white-space: pre-wrap; word-break: break-word; max-height: 7.4em; overflow: hidden;
+    display: flex; flex-direction: column; justify-content: flex-end;
+  }
+  .job pre span:last-child { color: var(--white-hot); }
+  .job.beat { animation: beat .6s ease-out; }
+  @keyframes beat { 50% { filter: brightness(1.35); } }
+
+  .anvil {
+    position: relative; margin-top: 0; padding: 10px 14px; display: flex; align-items: baseline; gap: 14px;
+    background: linear-gradient(#3a414f, #2b313c); border: 1px solid #4a5263; border-radius: 0 0 6px 6px;
+  }
+  .anvil h2 { margin: 0; font-size: 17px; font-weight: 600; }
+  .anvil .note { color: var(--ash); font-size: 14px; }
+  .anvil.flash { animation: anvil .5s ease-out; }
+  @keyframes anvil { 30% { box-shadow: 0 0 22px var(--flame); } }
+
+  .sparks { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+  .spark {
+    position: absolute; width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%;
+    background: var(--white-hot); box-shadow: 0 0 10px 3px var(--flame);
+  }
+  .spark.result { background: var(--brass); box-shadow: 0 0 10px 3px var(--brass); }
+  .spark.bad { background: var(--crack); box-shadow: 0 0 10px 3px var(--crack); }
+
+  /* Side panel: tasks and the event feed */
+  aside { min-width: 0; border-left: 1px solid var(--iron-edge); display: grid; grid-template-rows: minmax(0, 1.3fr) minmax(0, 1fr); grid-template-columns: minmax(0, 1fr); min-height: 0; }
+  aside section { display: flex; flex-direction: column; min-height: 0; }
+  aside h3 { margin: 0; padding: 12px 16px 8px; font-size: 17px; font-weight: 600; }
+  .list { overflow: auto; padding: 0 8px 10px; }
+  .task { width: 100%; text-align: left; background: none; border: 0; border-radius: 4px; padding: 7px 8px; display: grid; gap: 4px; cursor: pointer; }
+  .task:hover { background: var(--iron-raised); }
+  .task .row { display: flex; gap: 8px; align-items: baseline; }
+  .task .tid { font-weight: 600; }
+  .task .title { color: var(--ash); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+  .task .meta { color: var(--ash); font-size: 13px; display: flex; gap: 12px; }
+  .task .meta .status { color: var(--text); }
+  .task .meta .status.failed, .task .meta .status.blocked { color: var(--crack); }
+  .task .meta .status.done { color: var(--brass); }
+  .task .cancel { margin-left: auto; background: none; border: 1px solid var(--iron-edge); border-radius: 3px; padding: 0 6px; color: var(--ash); font-size: 12px; cursor: pointer; }
+  .task .cancel:hover { color: var(--crack); border-color: var(--crack); }
+  .stages { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; }
+  .stages i { height: 4px; border-radius: 2px; background: var(--iron-edge); }
+  .stages i.past { background: #6f6450; }
+  .stages i.now { background: var(--flame); box-shadow: 0 0 6px var(--flame); }
+  .stages.done i { background: var(--brass); }
+  .stages.failed i.now, .stages.blocked i.now { background: var(--crack); box-shadow: none; }
+
+  .feed { font: 400 12px/1.5 var(--mono); padding: 0 16px 12px; overflow: auto; color: #b9b3a6; }
+  .feed div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .feed time { color: #6c7380; margin-right: 8px; }
+  .feed .bad { color: var(--crack); }
+  .feed .good { color: var(--brass); }
+  .empty { color: var(--ash); padding: 4px 16px; }
+
+  @media (max-width: 1100px) {
+    main { grid-template-columns: 1fr; }
+    aside { border-left: 0; border-top: 1px solid var(--iron-edge); grid-template-rows: auto auto; }
+    .list, .feed { max-height: 40vh; }
+  }
+  @media (max-width: 700px) {
+    .roles { grid-template-columns: 1fr; }
+    .role { border-radius: 6px; border-bottom: 1px solid var(--iron-edge); }
+    .anvil { border-radius: 6px; margin-top: 12px; }
+    .forge { padding: 12px 16px; }
+    .top { padding: 12px 16px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .spark { display: none; }
+    .job, .job.beat, .anvil.flash { transition: none; animation: none; }
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Runeforge</h1>
+  <span class="stat"><b id="in-flight">0</b> tasks in flight</span>
+  <span class="stat"><b id="worker-count">0</b> workers</span>
+  <span class="stat"><b id="spend">$0.00</b> spent</span>
+  <span class="dry" id="dry" hidden>Dry run: no model calls</span>
+  <span class="conn" id="conn"><i></i><span>Connecting</span></span>
+</header>
+<main>
+  <section class="forge" id="forge">
+    <div class="roles" id="roles"></div>
+    <div class="anvil" id="anvil">
+      <h2>Supervisor</h2>
+      <span class="note" id="anvil-note">Routes every result to the next role</span>
+    </div>
+    <div class="sparks" id="sparks"></div>
+  </section>
+  <aside>
+    <section>
+      <h3>Tasks</h3>
+      <div class="list" id="tasks"></div>
+    </section>
+    <section>
+      <h3>Activity</h3>
+      <div class="feed" id="feed"></div>
+    </section>
+  </aside>
+</main>
+<script>
+(() => {
+  const ROLES = ["planner", "coder", "tester", "reviewer", "integrator"];
+  const STAGES = { pending: 0, planning: 0, checking_dependencies: 1, coding: 1, testing: 2, reviewing: 3, integrating: 4, done: 5 };
+  const TERMINAL = new Set(["done", "failed", "cancelled"]);
+  const HOT_AFTER = 10; // seconds until a job reads white-hot
+  const OUTPUT_LINES = 6;
+  const FEED_LIMIT = 200;
+
+  const token = new URLSearchParams(location.search).get("token");
+  const withToken = (path) => token ? `${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}` : path;
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+
+  const state = {
+    tasks: new Map(), messages: new Map(), workers: new Map(), output: new Map(),
+    lastStage: new Map(), selected: null, dryRun: false
+  };
+
+  // Senders look like "coder:worker@host:pid", "supervisor@host:pid", "intake" or "human:name".
+  const senderRole = (sender) => {
+    const s = String(sender || "");
+    if (s.startsWith("human:")) return "human";
+    const head = s.split(/[:@]/)[0];
+    return ROLES.includes(head) || head === "supervisor" || head === "operator" ? head : "intake";
+  };
+
+  // ---- Rendering --------------------------------------------------------------------------
+  let dirty = false;
+  const invalidate = () => { if (!dirty) { dirty = true; requestAnimationFrame(render); } };
+
+  function buildColumns() {
+    $("roles").innerHTML = ROLES.map((role) => `
+      <section class="role" data-role="${role}">
+        <header><h2>${role}</h2><span class="queue" data-queue></span></header>
+        <div class="workers" data-workers></div>
+        <div class="jobs" data-jobs></div>
+      </section>`).join("");
+  }
+
+  function render() {
+    dirty = false;
+    const now = Date.now();
+    for (const role of ROLES) {
+      const col = document.querySelector(`.role[data-role="${role}"]`);
+      const msgs = [...state.messages.values()].filter((m) => m.role === role);
+      const claimed = msgs.filter((m) => m.state === "claimed");
+      const pending = msgs.filter((m) => m.state === "pending");
+      const workers = [...state.workers.values()].filter((w) => w.roles.includes(role));
+      col.querySelector("[data-queue]").innerHTML = pending.length ? `<b>${pending.length}</b> waiting` : "";
+      col.querySelector("[data-workers]").textContent =
+        workers.length ? `${workers.length} worker${workers.length === 1 ? "" : "s"}` : "No workers running";
+      syncJobs(col.querySelector("[data-jobs]"), [...claimed, ...pending], now);
+    }
+    const supervisorQueue = [...state.messages.values()].filter((m) => m.role === "supervisor").length;
+    $("anvil-note").textContent = supervisorQueue
+      ? `${supervisorQueue} result${supervisorQueue === 1 ? "" : "s"} to route`
+      : "Routes every result to the next role";
+    renderTasks();
+    const tasks = [...state.tasks.values()];
+    $("in-flight").textContent = tasks.filter((t) => !TERMINAL.has(t.status) && t.status !== "blocked").length;
+    $("worker-count").textContent = state.workers.size;
+    $("spend").textContent = `$${(tasks.reduce((sum, t) => sum + (t.cost_cents || 0), 0) / 100).toFixed(2)}`;
+  }
+
+  // Updates job cards in place (keyed by message id) so heat transitions and heartbeat flashes survive.
+  function syncJobs(container, msgs, now) {
+    const existing = new Map([...container.querySelectorAll(".job")].map((el) => [el.dataset.key, el]));
+    const idle = container.querySelector(".idle");
+    if (!msgs.length) {
+      existing.forEach((el) => el.remove());
+      if (!idle) container.innerHTML = `<div class="idle">Idle</div>`;
+      return;
+    }
+    if (idle) idle.remove();
+    msgs.forEach((m, index) => {
+      const key = String(m.id);
+      let el = existing.get(key);
+      if (!el) { el = document.createElement("div"); el.dataset.key = key; }
+      existing.delete(key);
+      const job = jobParts(m, now);
+      el.className = job.className;
+      el.dataset.task = m.task_id;
+      el.dataset.msg = m.id;
+      el.style.setProperty("--heat", job.heat);
+      if (el.innerHTML !== job.inner) el.innerHTML = job.inner;
+      if (container.children[index] !== el) container.insertBefore(el, container.children[index] || null);
+    });
+    existing.forEach((el) => el.remove());
+  }
+
+  function jobParts(m, now) {
+    const selected = state.selected === m.task_id ? " selected" : "";
+    if (m.state !== "claimed") {
+      return { className: `job pending${selected}`, heat: 0, inner:
+        `<div class="line1"><span class="tid">${esc(m.task_id)}</span><span class="type">${esc(m.type)}</span></div>` +
+        `<div class="who">Waiting for a ${esc(m.role)}</div>` };
+    }
+    const secs = Math.max(0, (now - (m.claimedAt || now)) / 1000);
+    const lines = (state.output.get(m.id) || []).slice(-OUTPUT_LINES);
+    const attempt = m.payload && m.payload.attempt ? ` · attempt ${m.payload.attempt}` : "";
+    return { className: `job${selected}`, heat: Math.min(1, secs / HOT_AFTER).toFixed(2), inner:
+      `<div class="line1"><span class="tid">${esc(m.task_id)}</span><span class="type">${esc(m.type)}${attempt}</span>` +
+      `<span class="clock">${secs.toFixed(0)}s</span></div>` +
+      `<div class="who">${esc(m.claimed_by || "")}</div>` +
+      (lines.length ? `<pre>${lines.map((l) => `<span>${esc(l)}</span>`).join("\n")}</pre>` : "") };
+  }
+
+  function renderTasks() {
+    const tasks = [...state.tasks.values()].sort((a, b) => {
+      const activeA = !TERMINAL.has(a.status), activeB = !TERMINAL.has(b.status);
+      if (activeA !== activeB) return activeA ? -1 : 1;
+      return String(b.updated_at).localeCompare(String(a.updated_at));
+    });
+    if (!tasks.length) {
+      $("tasks").innerHTML = `<div class="empty">No tasks yet. Create one with runeforge task create or runeforge "a prompt".</div>`;
+      return;
+    }
+    $("tasks").innerHTML = tasks.map((t) => {
+      const stage = STAGES[t.status] ?? state.lastStage.get(t.id) ?? 0;
+      const segs = [0, 1, 2, 3, 4].map((i) => `<i class="${i < stage ? "past" : i === stage ? "now" : ""}"></i>`).join("");
+      const active = !TERMINAL.has(t.status);
+      const cost = `$${((t.cost_cents || 0) / 100).toFixed(2)}`;
+      return `<div class="task${state.selected === t.id ? " selected" : ""}" role="button" tabindex="0" data-task="${esc(t.id)}">
+        <div class="row"><span class="tid">${esc(t.id)}</span><span class="title">${esc(t.title)}</span></div>
+        <div class="stages ${esc(t.status)}">${segs}</div>
+        <div class="meta"><span class="status ${esc(t.status)}">${esc(t.status.replace(/_/g, " "))}</span>
+          <span>attempt ${t.attempts}/${t.max_attempts}</span><span>${(t.tokens_used || 0).toLocaleString()} tokens</span><span>${cost}</span>
+          ${active ? `<button class="cancel" data-cancel="${esc(t.id)}" title="Stop this task">Cancel</button>` : ""}</div>
+        ${t.error ? `<div class="meta"><span class="status failed">${esc(t.error)}</span></div>` : ""}
+      </div>`;
+    }).join("");
+  }
+
+  // ---- Feed --------------------------------------------------------------------------------
+  function feedLine(e) {
+    const d = e.data || {};
+    const who = d.role || "";
+    switch (e.kind) {
+      case "task.created": return [`${e.task_id} created: ${d.title || ""}`];
+      case "task.updated":
+        if (d.status === "done") return [`${e.task_id} done${d.external_pr_url ? ` (${d.external_pr_url})` : ""}`, "good"];
+        if (d.status === "failed" || d.status === "blocked") return [`${e.task_id} ${d.status}: ${d.error || ""}`, "bad"];
+        return null;
+      case "message.posted": return [`${senderRole(d.sender)} → ${who}  ${d.type}  ${e.task_id}`, /failed|declined/.test(d.type) ? "bad" : ""];
+      case "message.claimed": return who === "supervisor" ? null : [`${e.actor} took ${d.type} for ${e.task_id}`];
+      case "message.requeued": return [`${d.type} for ${e.task_id} requeued: ${d.error}`, "bad"];
+      case "message.dead": return [`${d.type} for ${e.task_id} gave up: ${d.error}`, "bad"];
+      case "message.cancelled": return [`${d.type} for ${e.task_id} cancelled`];
+      case "worker.started": return [`${e.actor} started`];
+      case "worker.stopped": return [`${e.actor} stopped`];
+      default: return null;
+    }
+  }
+
+  function addFeed(e) {
+    const line = feedLine(e);
+    if (!line) return;
+    const feed = $("feed");
+    const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 30;
+    const row = document.createElement("div");
+    const time = e.at ? new Date(e.at).toLocaleTimeString([], { hour12: false }) : "";
+    row.innerHTML = `<time>${time}</time><span class="${line[1] || ""}">${esc(line[0])}</span>`;
+    feed.appendChild(row);
+    while (feed.childElementCount > FEED_LIMIT) feed.firstElementChild.remove();
+    if (atBottom) feed.scrollTop = feed.scrollHeight;
+  }
+
+  // ---- Sparks: a message travelling between a role and the supervisor ------------------------
+  const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function spark(role, direction, kind) {
+    if (reducedMotion || document.hidden) return;
+    const forge = $("forge").getBoundingClientRect();
+    const anvil = $("anvil").getBoundingClientRect();
+    const col = document.querySelector(`.role[data-role="${role}"] header`);
+    const anvilY = anvil.top - forge.top + anvil.height / 2;
+    let from, to;
+    if (col) {
+      const r = col.getBoundingClientRect();
+      const x = r.left - forge.left + r.width / 2;
+      const top = { x, y: r.bottom - forge.top };
+      const bottom = { x, y: anvilY };
+      [from, to] = direction === "up" ? [bottom, top] : [top, bottom];
+    } else {
+      from = { x: anvil.left - forge.left, y: anvilY };
+      to = { x: anvil.left - forge.left + 120, y: anvilY };
+    }
+    const el = document.createElement("div");
+    el.className = `spark ${kind || ""}`;
+    $("sparks").appendChild(el);
+    el.animate([
+      { transform: `translate(${from.x}px, ${from.y}px) scale(1.4)`, opacity: 1 },
+      { transform: `translate(${to.x}px, ${to.y}px) scale(.8)`, opacity: .9 }
+    ], { duration: 650, easing: "cubic-bezier(.3,.6,.4,1)" }).onfinish = () => el.remove();
+  }
+
+  function flash(el, cls) {
+    if (!el) return;
+    el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls);
+  }
+
+  // ---- Applying events -----------------------------------------------------------------------
+  function apply(e, live) {
+    const d = e.data || {};
+    switch (e.kind) {
+      case "task.created":
+      case "task.updated": {
+        const prev = state.tasks.get(e.task_id);
+        if (prev && STAGES[prev.status] !== undefined) state.lastStage.set(e.task_id, STAGES[prev.status]);
+        state.tasks.set(e.task_id, { ...(prev || {}), ...d });
+        break;
+      }
+      case "message.posted": {
+        state.messages.set(e.message_id, {
+          id: e.message_id, task_id: e.task_id, type: d.type, role: d.role, recipient: d.recipient,
+          sender: d.sender, state: "pending", payload: d.payload || {}
+        });
+        if (live) {
+          if (d.role === "supervisor") {
+            const from = senderRole(d.sender);
+            spark(from, "down", /failed|declined/.test(d.type) || (d.payload && (d.payload.passed === false || d.payload.approved === false)) ? "bad" : "result");
+          } else {
+            spark(d.role, "up");
+          }
+        }
+        break;
+      }
+      case "message.claimed": {
+        const m = state.messages.get(e.message_id) || { id: e.message_id, task_id: e.task_id, type: d.type, role: d.role, payload: {} };
+        state.messages.set(e.message_id, { ...m, state: "claimed", claimed_by: e.actor, claimedAt: Date.parse(e.at) || Date.now() });
+        if (live && d.role === "supervisor") flash($("anvil"), "flash");
+        break;
+      }
+      case "message.heartbeat":
+        if (live) requestAnimationFrame(() => flash(document.querySelector(`.job[data-msg="${e.message_id}"]`), "beat"));
+        return;
+      case "message.requeued": {
+        const m = state.messages.get(e.message_id);
+        if (m) state.messages.set(e.message_id, { ...m, state: "pending", claimed_by: null });
+        break;
+      }
+      case "message.done":
+      case "message.dead":
+      case "message.cancelled":
+        state.messages.delete(e.message_id);
+        state.output.delete(e.message_id);
+        break;
+      case "agent.output": {
+        const lines = state.output.get(e.message_id) || [];
+        const text = (lines.partial || "") + (d.text || "");
+        const parts = text.split("\n");
+        const partial = parts.pop();
+        const next = lines.concat(parts.filter((l) => l.trim() !== "")).slice(-OUTPUT_LINES * 2);
+        next.partial = partial;
+        state.output.set(e.message_id, next);
+        break;
+      }
+      case "worker.started":
+        state.workers.set(e.actor, { id: e.actor, roles: d.roles || [] });
+        break;
+      case "worker.stopped":
+        state.workers.delete(e.actor);
+        break;
+    }
+    if (live) addFeed(e);
+    invalidate();
+  }
+
+  // ---- Wiring --------------------------------------------------------------------------------
+  function setConn(kind, text) {
+    $("conn").className = `conn ${kind}`;
+    $("conn").querySelector("span").textContent = text;
+  }
+
+  async function start() {
+    const res = await fetch(withToken("/api/state"));
+    if (!res.ok) throw new Error(`GET /api/state returned ${res.status}`);
+    const snap = await res.json();
+    state.dryRun = snap.dry_run;
+    $("dry").hidden = !snap.dry_run;
+    snap.tasks.forEach((t) => state.tasks.set(t.id, t));
+    snap.workers.forEach((w) => state.workers.set(w.id, w));
+    snap.messages.forEach((m) => state.messages.set(m.id, {
+      ...m, claimedAt: m.state === "claimed" ? Date.now() : null
+    }));
+    snap.events.forEach(addFeed);
+    invalidate();
+
+    const source = new EventSource(withToken(`/api/events?after=${snap.cursor}`));
+    source.onopen = () => setConn("live", "Live");
+    source.onerror = () => setConn("down", "Reconnecting");
+    source.onmessage = (msg) => apply(JSON.parse(msg.data), true);
+  }
+
+  // Clicking a job or a task highlights that task everywhere.
+  document.addEventListener("click", async (ev) => {
+    const cancel = ev.target.closest("[data-cancel]");
+    if (cancel) {
+      ev.stopPropagation();
+      const id = cancel.dataset.cancel;
+      cancel.disabled = true;
+      const res = await fetch(withToken(`/api/tasks/${encodeURIComponent(id)}/cancel`), {
+        method: "POST", headers: { "content-type": "application/json", "x-runeforge-dashboard": "1" }, body: "{}"
+      });
+      if (!res.ok) { cancel.disabled = false; addFeed({ kind: "message.dead", task_id: id, data: { type: "cancel", error: (await res.json()).error } }); }
+      return;
+    }
+    const target = ev.target.closest("[data-task]");
+    if (!target) return;
+    state.selected = state.selected === target.dataset.task ? null : target.dataset.task;
+    invalidate();
+  });
+  document.addEventListener("keydown", (ev) => {
+    if ((ev.key === "Enter" || ev.key === " ") && ev.target.matches(".task")) { ev.preventDefault(); ev.target.click(); }
+  });
+
+  // Elapsed clocks and heat climb even when no event arrives.
+  setInterval(invalidate, 1000);
+
+  buildColumns();
+  start().catch((err) => setConn("down", err.message));
+})();
+</script>
+</body>
+</html>

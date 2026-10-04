@@ -29,6 +29,8 @@ runeforge plan.md                                               # a markdown tas
 runeforge plan.md -d ~/code/my-app                              # iterate on an existing project
 ```
 
+- A single word that isn't a command or a file is refused as a likely typo; use
+  `runeforge build WORD` to build from a one-word prompt.
 - **Without `-d`/`--dir`**, Runeforge asks for a directory name, creates it as a new git
   repository, builds there and leaves it checked out on the `runeforge/<name>` branch.
 - **With `-d DIR`**, it works on a new `runeforge/<name>` branch in that repository and leaves
@@ -105,6 +107,9 @@ the only secret that enters a container), `GITHUB_TOKEN`, `JIRA_EMAIL`, `JIRA_AP
 | `runeforge init` | First-time setup; safe to repeat (see Quick start) |
 | `runeforge up / down / ps` | Start, stop and list the background supervisor and workers |
 | `runeforge webhook` | Serves `POST /webhooks/jira?token=…` for issues labelled `runeforge` |
+| `runeforge dashboard [--port 9393]` | Serves the live dashboard (see below) |
+| `runeforge demo` | Dry-run agents forever, plus the dashboard; no LLM, git or network |
+| `runeforge worker --role R --dry-run` | A worker whose agents only go through the motions |
 
 ## Roles
 
@@ -141,6 +146,36 @@ The planner's patch must include at least one test file (matching `test_globs`);
 files become locked, while any scaffolding it adds does not. The coder's patch is rejected if it
 touches a locked file, and the reviewer re-checks every locked file's git object id before the
 branch is updated.
+
+## Live dashboard
+
+`runeforge dashboard` serves an HTML page (Puma, default `http://127.0.0.1:9393/`) that shows
+each role's claimed and waiting work, its live output, and every task's progress, as it happens.
+It watches the database, so it sees supervisors and workers on any host.
+
+- **Events.** Every change that matters to a viewer (a message posted, claimed, heartbeated,
+  done, requeued, dead-lettered or cancelled; a task updated; a worker starting or stopping) also
+  writes a row to `runeforge_events`, in the same transaction. Running agents and test suites
+  add `agent.output` rows, batched about twice a second. The supervisor prunes events older
+  than `events.retention_hours`.
+- **Protocol.** `GET /api/state` returns a snapshot and a `cursor`; `GET /api/events?after=CURSOR`
+  is a Server-Sent Events stream of everything after it (`?task=ID` narrows it). Each frame's
+  `id` is the event id, so a reconnecting `EventSource` resumes where it left off. PostgreSQL
+  wakes the stream with `LISTEN`/`NOTIFY`; SQLite polls. `POST /api/tasks/ID/cancel` (with an
+  `X-Runeforge-Dashboard: 1` header) stops a task.
+- **Access.** It binds to 127.0.0.1. Set `RUNEFORGE_DASHBOARD_TOKEN` to require `?token=`.
+
+**Dry run.** With `dry_run.enabled: true` (or `runeforge worker --dry-run`), every role claims
+real messages but, instead of running an agent, narrates canned steps for 5-10 seconds
+(`dry_run.min_seconds`/`max_seconds`) and replies with a made-up result. Some results are
+failures (`dry_run.failure_rate`), so retries and failed tasks happen too. `runeforge demo` runs
+a supervisor, dry-run workers for every role and a feeder that keeps three tasks in flight, all in
+one process with its own `~/.runeforge/demo.db`, until Ctrl-C:
+
+```sh
+runeforge demo                         # then open http://127.0.0.1:9393/
+runeforge demo --concurrency 5 --min-seconds 2 --max-seconds 4
+```
 
 ## Embedding
 

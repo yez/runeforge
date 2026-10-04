@@ -6,8 +6,10 @@ module Runeforge
     # Own version table, so embedding in an app never collides with its migrations.
     SCHEMA_TABLE = :runeforge_schema_info
 
-    def self.connect(url)
+    # max_connections matters for processes with many threads (the dashboard and `runeforge demo`).
+    def self.connect(url, max_connections: nil)
       opts = url.start_with?("sqlite") ? { timeout: 10_000 } : {}
+      opts[:max_connections] = max_connections if max_connections
       sqlite_path = url[%r{\Asqlite://(/.+)\z}, 1]
       FileUtils.mkdir_p(File.dirname(sqlite_path)) if sqlite_path
       db = Sequel.connect(url, **opts)
