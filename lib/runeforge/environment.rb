@@ -29,10 +29,15 @@ module Runeforge
 
     def sandboxed? = config.dig("sandbox", "mode") != "none"
 
+    def dry_run? = config.dig("dry_run", "enabled") == true
+
     def adapter = (@adapter ||= Adapters.build(config["agent"], sandboxed: sandboxed?))
 
     def new_sandbox(image: nil)
-      @sandbox_factory ? @sandbox_factory.call(image:) : Sandbox.build(config["sandbox"], image:)
+      return @sandbox_factory.call(image:) if @sandbox_factory
+      return DryRun::Sandbox.new if dry_run?
+
+      Sandbox.build(config["sandbox"], image:)
     end
 
     def committer(repo_name)

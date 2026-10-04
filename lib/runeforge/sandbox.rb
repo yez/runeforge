@@ -24,14 +24,17 @@ module Runeforge
     module Runner
       module_function
 
+      # on_output, if given, receives (chunk, stream) as output arrives, for live viewers.
       def run(argv, env: {}, chdir: nil, timeout: nil, pgroup: false, unsetenv_others: false,
-              on_timeout: nil, max_output: 1_000_000)
+              on_timeout: nil, max_output: 1_000_000, on_output: nil)
         opts = { unsetenv_others:, pgroup: }
         opts[:chdir] = chdir if chdir
         Open3.popen3(env, *argv, **opts) do |stdin, out, err, thread|
           stdin.close
           yield thread.pid if block_given?
-          readers = [out, err].map { |io| Thread.new { read_tail(io, max_output) } }
+          readers = { out => "stdout", err => "stderr" }.map do |io, stream|
+            Thread.new { read_tail(io, max_output) { |chunk| on_output&.call(chunk, stream) } }
+          end
           timed_out = thread.join(timeout).nil?
           if timed_out
             on_timeout&.call
@@ -52,7 +55,9 @@ module Runeforge
       def read_tail(io, max_bytes)
         buffer = +""
         loop do
-          buffer << io.readpartial(65_536)
+          chunk = io.readpartial(65_536)
+          yield chunk if block_given?
+          buffer << chunk
           buffer = buffer.byteslice(-max_bytes, max_bytes) if buffer.bytesize > max_bytes * 2
         end
       rescue EOFError, IOError
@@ -85,9 +90,9 @@ module Runeforge
         @user = user
       end
 
-      def run(workdir:, script:, env: {})
+      def run(workdir:, script:, env: {}, on_output: nil)
         @id = "runeforge-#{SecureRandom.hex(6)}"
-        Runner.run(argv(workdir, script, env.keys), env:, timeout: @timeout, on_timeout: -> { kill })
+        Runner.run(argv(workdir, script, env.keys), env:, timeout: @timeout, on_timeout: -> { kill }, on_output:)
       ensure
         @id = nil
       end
@@ -124,10 +129,10 @@ module Runeforge
 
       def id = @pid && "pid-#{@pid}"
 
-      def run(workdir:, script:, env: {})
+      def run(workdir:, script:, env: {}, on_output: nil)
         base = ENV.to_h.slice(*PASSTHROUGH)
         Runner.run(["sh", "-c", script], env: base.merge(env), chdir: workdir, timeout: @timeout,
-                                         pgroup: true, unsetenv_others: true) { |pid| @pid = pid }
+                                         pgroup: true, unsetenv_others: true, on_output:) { |pid| @pid = pid }
       ensure
         @pid = nil
       end

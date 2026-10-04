@@ -44,3 +44,33 @@ RSpec.describe Runeforge::CLI do
     expect(cli("version")).to eq("runeforge #{Runeforge::VERSION}\n")
   end
 end
+
+RSpec.describe Runeforge::CLI, ".start" do
+  def start(*args)
+    err = StringIO.new
+    original = $stderr
+    $stderr = err
+    status = nil
+    expect(Runeforge::Build).not_to receive(:new)
+    begin
+      described_class.start(args)
+    rescue SystemExit => e
+      status = e.status
+    end
+    [status, err.string]
+  ensure
+    $stderr = original
+  end
+
+  it "refuses a single unknown word instead of building from it" do
+    status, err = start("demoo")
+    expect(status).to eq(1)
+    expect(err).to include('unknown command "demoo". Did you mean "demo"?', "runeforge build demoo")
+  end
+
+  it "refuses a word with no close command" do
+    status, err = start("zzzzzz", "-d", "/tmp")
+    expect(status).to eq(1)
+    expect(err).not_to include("Did you mean")
+  end
+end

@@ -21,7 +21,9 @@ module Runeforge
     end
 
     def update(id, fields)
-      table.where(id: id.to_s).update(fields.merge(updated_at: Runeforge.now))
+      table.where(id: id.to_s).update(fields.merge(updated_at: Runeforge.now)).tap do |count|
+        Events.task(@db, id) if count.positive?
+      end
     end
 
     def messages(id, after: 0)
@@ -43,6 +45,7 @@ module Runeforge
           base_sha:, branch: branch || "runeforge/#{id}", max_attempts:, token_budget:, deadline_at:,
           lane:, locked_paths: JSON.generate(locked_paths), created_at: now, updated_at: now
         )
+        Events.task(@db, id, "task.created")
         mailbox.post(task_id: id, type: "task.created", recipient: Runeforge.recipient(lane, "supervisor"),
                      payload: input, dedupe_key: "#{id}:task.created")
       end
@@ -57,7 +60,7 @@ module Runeforge
         raise Error, "task #{id} is already #{task[:status]}" if TERMINAL_STATUSES.include?(task[:status])
 
         update(id, status: "cancelled", error: reason)
-        @db[:runeforge_messages].where(task_id: id.to_s, state: %w[pending claimed]).update(state: "cancelled")
+        Events.cancel_messages(@db, @db[:runeforge_messages].where(task_id: id.to_s))
       end
     end
 

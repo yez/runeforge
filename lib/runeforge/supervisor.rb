@@ -34,12 +34,23 @@ module Runeforge
     # Reaps expired leases and handles every waiting result. Returns how many it handled.
     def tick
       mailbox.reap
+      prune_events
       handled = 0
       while (msg = mailbox.claim(Runeforge.recipient(lane, "supervisor")))
         handle(msg)
         handled += 1
       end
       handled
+    end
+
+    PRUNE_EVERY = 600
+
+    # Drops dashboard events older than events.retention_hours, at most every PRUNE_EVERY seconds.
+    def prune_events
+      return if @pruned_at && Runeforge.now - @pruned_at < PRUNE_EVERY
+
+      @pruned_at = Runeforge.now
+      Events.prune(env.db, before: @pruned_at - (env.config.dig("events", "retention_hours").to_f * 3600))
     end
 
     def handle(msg)
@@ -161,8 +172,7 @@ module Runeforge
       end
 
       def cancel_in_flight!
-        @env.db[:runeforge_messages].where(task_id: task[:id], state: %w[pending claimed])
-            .exclude(id: msg.id).update(state: "cancelled")
+        Events.cancel_messages(@env.db, @env.db[:runeforge_messages].where(task_id: task[:id]).exclude(id: msg.id))
       end
 
       def feedback_text(feedback)

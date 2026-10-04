@@ -44,7 +44,12 @@ module Runeforge
 
       attr_reader :env, :msg, :sandbox, :task, :repo
 
-      def self.call(env, msg, sandbox) = new(env, msg, sandbox).call
+      def self.call(env, msg, sandbox)
+        role = new(env, msg, sandbox)
+        role.call
+      ensure
+        role&.output&.close
+      end
 
       def initialize(env, msg, sandbox)
         @env = env
@@ -53,6 +58,9 @@ module Runeforge
         @task = env.tasks.find!(msg.task_id)
         @repo = env.repos.fetch(task[:repo])
       end
+
+      # Live output for the dashboard (agent.output events).
+      def output = (@output ||= OutputStream.new(env.db, msg))
 
       private
 
@@ -75,7 +83,9 @@ module Runeforge
       def run_agent(workspace, prompt)
         workspace.write_meta("prompt.md", prompt)
         script = format(AGENT_SCRIPT, command: env.adapter.command)
-        run = sandbox.run(workdir: workspace.path, script:, env: env.agent_key_env)
+        # The agent's output goes to files in the workspace; follow them while it runs.
+        files = { "stdout" => File.join(workspace.meta_dir, "agent.out"), "stderr" => File.join(workspace.meta_dir, "agent.err") }
+        run = output.follow(files) { sandbox.run(workdir: workspace.path, script:, env: env.agent_key_env) }
         output = workspace.read_meta("agent.out", max_bytes: limits["max_output_bytes"]).to_s
         errors = workspace.read_meta("agent.err", max_bytes: limits["max_output_bytes"]).to_s
         log = write_log(self.class.name.split("::").last.downcase,

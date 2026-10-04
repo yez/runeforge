@@ -12,7 +12,7 @@ module Runeforge
 
         with_workspace(msg.commit_sha, "test") do |workspace|
           script = [repo[:setup_command], repo[:test_command]].compact.reject(&:empty?).join(" && ")
-          run = sandbox.run(workdir: workspace.path, script:, env: {})
+          run = sandbox.run(workdir: workspace.path, script:, env: {}, on_output: ->(chunk, stream) { output.write(chunk, stream:) })
           output = [run.stdout, run.stderr].reject(&:empty?).join("\n")
           passed = run.success?
           reason = passed ? nil : (run.timed_out ? "tests timed out" : "tests failed (exit status #{run.exit_code})")

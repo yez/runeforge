@@ -22,6 +22,7 @@ module Runeforge
 
     def run(stop: -> { false })
       register
+      Events.emit(env.db, "worker.started", actor: id, roles:)
       until stop.call
         next if work_once
 
@@ -32,7 +33,10 @@ module Runeforge
       unregister
     end
 
-    def unregister = workers.where(id:).delete
+    def unregister
+      workers.where(id:).delete
+      Events.emit(env.db, "worker.stopped", actor: id, roles:)
+    end
 
     # Kills whatever sandbox is running right now (used for Ctrl-C in the foreground).
     def interrupt = @sandbox&.kill
@@ -52,7 +56,8 @@ module Runeforge
       sandbox = @sandbox = env.new_sandbox(image: image_for(msg))
       beat(msg)
       heartbeat = start_heartbeat(msg, sandbox)
-      outcome = Roles.fetch(Runeforge.role_of(msg.recipient)).call(env, msg, sandbox)
+      role = Runeforge.role_of(msg.recipient)
+      outcome = (env.dry_run? ? DryRun.fetch(role) : Roles.fetch(role)).call(env, msg, sandbox)
       mailbox.complete(msg, **outcome)
     rescue Mailbox::LeaseLost
       # Reclaimed or cancelled while we worked; someone else owns the message now.

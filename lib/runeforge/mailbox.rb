@@ -20,11 +20,14 @@ module Runeforge
     # Returns the new message id, or nil when the dedupe key was already used.
     def post(task_id:, type:, recipient:, payload: {}, sender: worker_id, in_reply_to: nil, commit_sha: nil, dedupe_key: nil)
       db.transaction(savepoint: true) do
-        messages.insert(
+        row = {
           task_id: task_id.to_s, type: type.to_s, recipient: recipient.to_s, sender: sender.to_s,
           in_reply_to:, commit_sha:, payload: JSON.generate(payload), dedupe_key:,
           state: "pending", delivery_count: 0, created_at: Runeforge.now
-        )
+        }
+        id = messages.insert(row)
+        Events.message(db, "message.posted", row.merge(id:), actor: sender, payload:)
+        id
       end
     rescue Sequel::UniqueConstraintViolation
       nil
@@ -45,7 +48,7 @@ module Runeforge
         )
         next nil if updated.zero?
 
-        find(row[:id])
+        find(row[:id]).tap { |msg| Events.message(db, "message.claimed", msg, lease_expires_at: msg.lease_expires_at) }
       end
     end
 
@@ -57,6 +60,7 @@ module Runeforge
                         .update(state: "done", lease_expires_at: nil)
         raise LeaseLost, "message #{msg.id} was reclaimed" if owned.zero?
 
+        Events.message(db, "message.done", msg, actor: worker_id)
         yield if block_given?
       end
     end
@@ -71,13 +75,15 @@ module Runeforge
           dedupe_key: "#{msg.task_id}:#{result_type}:#{msg.id}"
         )
         db[:runeforge_tasks].where(id: msg.task_id).update(task_updates.merge(updated_at: Runeforge.now))
+        Events.task(db, msg.task_id) if task_updates.any?
       end
     end
 
     def heartbeat(msg)
-      messages.where(id: msg.id, claimed_by: worker_id, state: "claimed")
-              .update(lease_expires_at: Runeforge.now + lease_seconds)
-              .positive?
+      expires = Runeforge.now + lease_seconds
+      alive = messages.where(id: msg.id, claimed_by: worker_id, state: "claimed").update(lease_expires_at: expires).positive?
+      Events.message(db, "message.heartbeat", msg, actor: worker_id, lease_expires_at: expires) if alive
+      alive
     end
 
     # Gives a message back after a handler error. Dead-letters it after max_deliveries.
@@ -115,12 +121,15 @@ module Runeforge
       scope = messages.where(id: row[:id])
       if row[:delivery_count] >= max_deliveries
         scope.update(state: "dead", lease_expires_at: nil, last_error: error)
-        db[:runeforge_tasks].where(id: row[:task_id]).exclude(status: TERMINAL_STATUSES).update(
+        Events.message(db, "message.dead", row, error:)
+        blocked = db[:runeforge_tasks].where(id: row[:task_id]).exclude(status: TERMINAL_STATUSES).update(
           status: "blocked", updated_at: Runeforge.now,
           error: "message #{row[:id]} (#{row[:type]}) failed #{row[:delivery_count]} times: #{error}"
         )
+        Events.task(db, row[:task_id]) if blocked.positive?
       else
         scope.update(state: "pending", claimed_by: nil, lease_expires_at: nil, last_error: error)
+        Events.message(db, "message.requeued", row, error:)
       end
     end
   end

@@ -77,6 +77,18 @@ module Runeforge
         "default_repo" => nil
       },
       "workflow_paths" => [],
+      # Agents that go through the motions (sleeps and canned output) without calling an LLM,
+      # git or the network. See Runeforge::DryRun.
+      "dry_run" => {
+        "enabled" => false,
+        "min_seconds" => 5,
+        "max_seconds" => 10,
+        "failure_rate" => 0.15
+      },
+      # The runeforge_events feed behind the dashboard. Older events are pruned by the supervisor.
+      "events" => {
+        "retention_hours" => 24
+      },
       # Background processes started by `runeforge up`: one supervisor plus one worker per entry.
       "workers" => ["planner,coder", "tester,reviewer,integrator"]
     }.freeze

@@ -94,8 +94,24 @@ module Runeforge
 
         arg.start_with?("-db=") ? "--database=#{arg.delete_prefix('-db=')}" : arg
       end
-      args = ["build", *args] if args.first && !args.first.start_with?("-") && !command?(args.first)
+      if args.first && !args.first.start_with?("-") && !command?(args.first)
+        refuse_bare_word(args.first)
+        args = ["build", *args]
+      end
       super(args, config)
+    end
+
+    # A single word that is neither a command nor a file is far more likely a mistyped command (or
+    # one this version doesn't have) than a prompt, and treating it as a prompt starts a real build.
+    # `runeforge build WORD` still builds from it.
+    def self.refuse_bare_word(word)
+      return if word.match?(/\s/) || File.exist?(word)
+
+      names = all_commands.keys.map { |name| name.tr("_", "-") } + subcommands + map.keys.map(&:to_s)
+      suggestion = DidYouMean::SpellChecker.new(dictionary: names.uniq).correct(word).first
+      warn "runeforge: unknown command \"#{word}\"#{suggestion ? ". Did you mean \"#{suggestion}\"?" : ''}"
+      warn "To build from a one-word prompt, run: runeforge build #{word}"
+      exit 1
     end
 
     def self.command?(name)
@@ -226,9 +242,14 @@ module Runeforge
     desc "worker", "Run a worker for one or more roles"
     option :role, required: true, desc: "Comma-separated: planner,coder,tester,reviewer,integrator"
     option :once, type: :boolean, desc: "Handle at most one message, then exit"
+    option :dry_run, type: :boolean, desc: "Go through the motions without calling an LLM, git or the network"
     def worker
       guard do
-        runner = Worker.new(env, roles: options[:role].split(",").map(&:strip))
+        worker_env = env
+        if options[:dry_run]
+          worker_env = Environment.new(Config.new(Config.deep_merge(env.config.to_h, "dry_run" => { "enabled" => true })), db: env.db)
+        end
+        runner = Worker.new(worker_env, roles: options[:role].split(",").map(&:strip))
         options[:once] ? runner.work_once : run_until_signal(runner)
       end
     end
@@ -319,8 +340,77 @@ module Runeforge
       Rackup::Handler::WEBrick.run(Web::WebhookApp.new(env), Host: options[:host], Port: options[:port])
     end
 
+    desc "dashboard", "Serve the live dashboard (HTML + Server-Sent Events) with Puma"
+    long_desc <<~DESC
+      Open http://HOST:PORT/ in a browser. Watches whatever supervisor and workers share this
+      database, on this machine or others. Set RUNEFORGE_DASHBOARD_TOKEN to require ?token=.
+    DESC
+    option :host, default: "127.0.0.1"
+    option :port, type: :numeric, default: 9393
+    def dashboard
+      guard do
+        db = DB.connect(env.config["database"], max_connections: 40)
+        raise Error, "the database needs migrating; run runeforge db migrate" unless DB.migrated?(db)
+
+        serve(Environment.new(env.config, db:), options[:host], options[:port])
+      end
+    end
+
+    desc "demo", "Run dry-run agents forever and serve the dashboard (no LLM, git or network)"
+    long_desc <<~DESC
+      Starts a supervisor, dry-run workers for every role and a feeder that keeps tasks flowing,
+      all in this process, plus the dashboard. Agents sleep through canned steps for 5-10 seconds
+      each and sometimes fail, so retries show up too. Uses its own SQLite database
+      (<home>/demo.db) unless you pass --database. Ctrl-C stops it.
+    DESC
+    option :host, default: "127.0.0.1"
+    option :port, type: :numeric, default: 9393
+    option :concurrency, type: :numeric, default: 3, desc: "Tasks in flight at once"
+    option :min_seconds, type: :numeric, desc: "Shortest step (default dry_run.min_seconds, 5)"
+    option :max_seconds, type: :numeric, desc: "Longest step (default dry_run.max_seconds, 10)"
+    def demo
+      guard do
+        settings = Config.deep_merge(env.config.to_h, {
+          "database" => options[:database] || "sqlite://#{File.join(env.home, 'demo.db')}",
+          "poll_seconds" => 0.2, "heartbeat_seconds" => 2, "lease_seconds" => 60,
+          "dry_run" => { "enabled" => true, "min_seconds" => options[:min_seconds], "max_seconds" => options[:max_seconds] }.compact
+        })
+        db = DB.connect(settings["database"], max_connections: 40)
+        DB.migrate!(db)
+        demo_env = Environment.new(Config.new(settings), db:)
+        runner = Demo.new(demo_env, concurrency: options[:concurrency]).start
+        begin
+          serve(demo_env, options[:host], options[:port])
+        ensure
+          trap("INT", "DEFAULT") # a second Ctrl-C exits immediately
+          say "Stopping the demo agents..."
+          runner.stop
+        end
+      end
+    end
+
     no_commands do
       def daemons = Daemons.new(env, config_path:, database: options[:database])
+
+      def serve(env, host, port)
+        require "rackup"
+        require "rack/handler/puma"
+        require "runeforge/web/dashboard_app"
+        say "Dashboard on http://#{host}:#{port}/  (database #{env.config['database']}; Ctrl-C stops)"
+        app = Web::DashboardApp.new(env)
+        # Ctrl-C makes Puma call launcher.stop and wait for requests in progress. Event streams never
+        # finish on their own, so end them first. The short timeouts are a backstop.
+        on_stop = Module.new do
+          define_method(:stop) do
+            app.shutdown
+            super()
+          end
+        end
+        Rackup::Handler::Puma.run(app, Host: host, Port: port, Threads: "1:32", Silent: true,
+                                       force_shutdown_after: 1, pool_shutdown_grace_time: 1) do |launcher|
+          launcher.singleton_class.prepend(on_stop)
+        end
+      end
 
       def run_until_signal(runner)
         stop = false
