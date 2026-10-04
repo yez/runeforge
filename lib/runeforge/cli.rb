@@ -356,6 +356,22 @@ module Runeforge
       end
     end
 
+    desc "warcamp", "Serve the war camp: the live dashboard as an orc camp, RTS-style"
+    long_desc <<~DESC
+      Same data and API as `runeforge dashboard`, drawn as an orc camp: each role has a building,
+      and each worker is an orc who leaves it to work on a job and brings the result back.
+    DESC
+    option :host, default: "127.0.0.1"
+    option :port, type: :numeric, default: 9393
+    def warcamp
+      guard do
+        db = DB.connect(env.config["database"], max_connections: 40)
+        raise Error, "the database needs migrating; run runeforge db migrate" unless DB.migrated?(db)
+
+        serve(Environment.new(env.config, db:), options[:host], options[:port], page: :warcamp)
+      end
+    end
+
     desc "demo", "Run dry-run agents forever and serve the dashboard (no LLM, git or network)"
     long_desc <<~DESC
       Starts a supervisor, dry-run workers for every role and a feeder that keeps tasks flowing,
@@ -368,6 +384,7 @@ module Runeforge
     option :concurrency, type: :numeric, default: 3, desc: "Tasks in flight at once"
     option :min_seconds, type: :numeric, desc: "Shortest step (default dry_run.min_seconds, 5)"
     option :max_seconds, type: :numeric, desc: "Longest step (default dry_run.max_seconds, 10)"
+    option :warcamp, type: :boolean, desc: "Serve the war camp view instead of the dashboard"
     def demo
       guard do
         settings = Config.deep_merge(env.config.to_h, {
@@ -380,7 +397,7 @@ module Runeforge
         demo_env = Environment.new(Config.new(settings), db:)
         runner = Demo.new(demo_env, concurrency: options[:concurrency]).start
         begin
-          serve(demo_env, options[:host], options[:port])
+          serve(demo_env, options[:host], options[:port], page: options[:warcamp] ? :warcamp : :dashboard)
         ensure
           trap("INT", "DEFAULT") # a second Ctrl-C exits immediately
           say "Stopping the demo agents..."
@@ -392,12 +409,12 @@ module Runeforge
     no_commands do
       def daemons = Daemons.new(env, config_path:, database: options[:database])
 
-      def serve(env, host, port)
+      def serve(env, host, port, page: :dashboard)
         require "rackup"
         require "rack/handler/puma"
         require "runeforge/web/dashboard_app"
         say "Dashboard on http://#{host}:#{port}/  (database #{env.config['database']}; Ctrl-C stops)"
-        app = Web::DashboardApp.new(env)
+        app = Web::DashboardApp.new(env, page:)
         # Ctrl-C makes Puma call launcher.stop and wait for requests in progress. Event streams never
         # finish on their own, so end them first. The short timeouts are a backstop.
         on_stop = Module.new do

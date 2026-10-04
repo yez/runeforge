@@ -1,0 +1,1059 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Runeforge War Camp</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=Alegreya:ital,wght@0,400;0,500;0,700;1,400&display=swap">
+<style>
+  /* Frames ported from warcraftcn/ui (MIT): border-image panels with Cinzel type. */
+  :root {
+    --gold: #f2c45a;
+    --gold-dim: #b08a3a;
+    --parchment: #e9dcc0;
+    --blood: #c0392b;
+    --moss: #8fbf5a;
+    --night: #0c0a08;
+    --wood: #2a1d14;
+    --fantasy: "Cinzel", "Trajan Pro", Georgia, serif;
+    --text: "Alegreya", Georgia, serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--night); color: var(--parchment); }
+  body { font: 400 15px/1.4 var(--text); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+  button { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+
+  .wc-card {
+    border-style: solid; border-width: 24px; border-image: url("assets/ui_card-bg.webp") 24 fill stretch;
+  }
+  /* The frame's corner ornaments are ~88px in the source image; slicing there and drawing the
+     border at 28px keeps them whole, and content (with a little padding) stays inside them. */
+  .wc-panel {
+    border-style: solid; border-width: 28px; border-image: url("assets/ui_dropdown-menu-bg.webp") 88 fill stretch;
+    padding: 2px 4px;
+  }
+  .wc-panel > * { min-height: 0; }
+  .wc-button {
+    border-style: solid; border-width: 10px; border-image: url("assets/ui_button-orc.webp") 16 fill stretch;
+    background: none; color: #fff2d6; cursor: pointer; padding: 0 4px; text-shadow: 0 1px 2px #000;
+    font: 700 12.5px/1.15 var(--fantasy); transition: filter .1s;
+  }
+  .wc-button:hover:not(:disabled) { filter: brightness(1.15); }
+  .wc-button:active:not(:disabled) { filter: brightness(.8); transform: scale(.97); }
+  .wc-button:disabled { filter: grayscale(.8) brightness(.6); cursor: default; }
+
+  /* Top bar: resources */
+  .topbar {
+    display: flex; align-items: center; gap: 22px; padding: 6px 18px; flex-wrap: wrap;
+    background: linear-gradient(#3a2a1c, #1d140d); border-bottom: 2px solid #5c4326; box-shadow: 0 2px 10px #000;
+    position: relative; z-index: 3;
+  }
+  .topbar h1 { margin: 0; font: 700 18px var(--fantasy); color: var(--gold); text-shadow: 0 1px 3px #000; font-weight: 700; }
+  .res { display: flex; align-items: center; gap: 6px; color: var(--gold); font: 700 15px var(--fantasy); }
+  .res svg { width: 20px; height: 20px; }
+  .res span { color: var(--parchment); font: 400 13px var(--text); }
+  .live { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 12px; }
+  .live i { width: 9px; height: 9px; border-radius: 50%; background: #777; }
+  .live.on i { background: var(--moss); box-shadow: 0 0 8px var(--moss); }
+  .live.off i { background: var(--blood); }
+  .dry { font-size: 12px; color: #a8c8ff; }
+
+  /* The map */
+  .field { position: relative; min-height: 0; }
+  canvas#world { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+  canvas#world.dragging { cursor: grabbing; }
+  .log { position: absolute; left: 14px; top: 10px; width: min(520px, 70%); pointer-events: none; font-size: 14.5px; }
+  .log div { text-shadow: 0 1px 2px #000, 0 0 6px #000; transition: opacity 1s; }
+  .log .bad { color: #ff8a7a; }
+  .log .good { color: var(--gold); }
+  .banner {
+    position: absolute; left: 50%; top: 18%; transform: translateX(-50%); pointer-events: none;
+    font: 700 28px var(--fantasy); color: var(--gold); text-shadow: 0 2px 4px #000, 0 0 18px #000; text-align: center;
+    opacity: 0; transition: opacity .4s;
+  }
+  .banner.show { opacity: 1; }
+  .banner.bad { color: #ff6b5a; }
+  .tip {
+    position: absolute; pointer-events: none; z-index: 4; min-width: 200px; max-width: 280px; padding: 0;
+    font-size: 12.5px; display: none;
+  }
+  .tip .wc-panel { padding: 0 2px; border-width: 22px; background: none; }
+  .tip .wc-panel b { margin-top: -6px; }
+  .tip b { color: var(--gold); font: 700 14px var(--fantasy); display: block; }
+  .tip em { color: #cdbf9f; font-style: normal; }
+
+  /* Bottom console: minimap, unit card, command card */
+  .console {
+    display: grid; grid-template-columns: 230px minmax(0, 1fr) 300px; gap: 6px; padding: 6px;
+    background: linear-gradient(#24180f, #120c07); border-top: 2px solid #5c4326; height: 236px;
+    position: relative; z-index: 3;
+  }
+  .console > section { min-height: 0; min-width: 0; overflow: hidden; }
+  #center { display: flex; flex-direction: column; }
+  #center > * { flex: 1; min-height: 0; }
+  .minimap { padding: 0; display: flex; }
+  .minimap.wc-panel { border-width: 22px; }
+  .minimap canvas { width: 100%; height: 100%; display: block; cursor: pointer; background: #1b2412; }
+  .unit { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 12px; height: 100%; }
+  .unit > div { min-height: 0; display: flex; flex-direction: column; }
+  .portrait { width: 112px; height: 132px; max-height: 100%; background: radial-gradient(#3b4a2a, #12160c); border: 2px solid var(--gold-dim); border-radius: 4px; display: block; }
+  .unit h2 { margin: 0; color: var(--gold); font: 700 17px var(--fantasy); text-transform: capitalize; }
+  .unit .sub { color: #cdbf9f; font-size: 12px; }
+  .unit .meta { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; margin-top: 4px; }
+  .unit .meta b { color: var(--gold); font-weight: 400; }
+  .out {
+    margin-top: 6px; font: 11.5px/1.45 ui-monospace, Menlo, monospace; color: #d9cdb0; background: rgba(0,0,0,.35);
+    padding: 6px 8px; border-radius: 3px; flex: 1; min-height: 40px; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .out span:last-child { color: #fff3c9; }
+  .tasks { height: 100%; overflow: auto; font-size: 12.5px; }
+  .tasks h2 { margin: 0 0 4px; color: var(--gold); font: 700 15px var(--fantasy); }
+  .tasks, .out { scrollbar-width: thin; scrollbar-color: #6b5130 transparent; }
+  .task { display: grid; grid-template-columns: 82px minmax(0, 1fr) 96px; gap: 8px; align-items: center; padding: 2px 4px; border-radius: 3px; cursor: pointer; width: 100%; background: none; border: 0; text-align: left; }
+  .task:hover { background: rgba(255, 220, 150, .08); }
+  .task .id { color: var(--gold); font-family: var(--fantasy); font-size: 12px; }
+  .task .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #e2d6bb; }
+  .bar { display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; }
+  .bar i { height: 6px; background: #3a2d22; border-radius: 1px; }
+  .bar i.past { background: #8a7140; }
+  .bar i.now { background: var(--gold); box-shadow: 0 0 5px var(--gold); }
+  .bar.done i { background: var(--moss); }
+  .bar.failed i.now, .bar.blocked i.now, .bar.cancelled i.now { background: var(--blood); box-shadow: none; }
+  .commands { display: grid; grid-template-columns: repeat(2, 1fr); grid-auto-rows: 40px; gap: 6px; align-content: start; height: 100%; overflow: auto; scrollbar-width: none; }
+  .commands .wc-button { font-size: 11.5px; white-space: nowrap; }
+  .credits { grid-column: 1 / -1; font-size: 11px; color: #9d8f72; line-height: 1.35; margin-top: 2px; }
+  .credits a { color: #c9b27a; }
+  .empty { color: #a8997a; font-size: 13px; }
+
+  @media (max-width: 900px) {
+    .console { grid-template-columns: 1fr; height: auto; max-height: 46vh; overflow: auto; }
+    .minimap { display: none; }
+    .commands { grid-template-columns: repeat(3, 1fr); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .banner, .log div { transition: none; }
+  }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <h1>Runeforge War Camp</h1>
+  <div class="res" title="Tokens spent across tasks shown">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="9" width="18" height="6" rx="3" fill="#8b5a2b" stroke="#3b2412"/><circle cx="20" cy="12" r="2.4" fill="#d9a066" stroke="#3b2412"/></svg>
+    <b id="lumber">0</b><span>tokens</span>
+  </div>
+  <div class="res" title="Money spent across tasks shown">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="#f2c45a" stroke="#7a5a12" stroke-width="1.5"/><circle cx="12" cy="12" r="4.5" fill="none" stroke="#b8891d"/></svg>
+    <b id="gold">$0.00</b><span>spent</span>
+  </div>
+  <div class="res" title="Workers on a job / workers running">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 15c0-5 4-9 9-8 4 1 6 5 4 8-2 4-9 5-13 0z" fill="#a8432f" stroke="#4a1a10"/><rect x="15" y="15" width="5" height="3" rx="1.5" fill="#efe1c6" transform="rotate(35 17 16)"/></svg>
+    <b id="food">0/0</b><span>busy</span>
+  </div>
+  <div class="res" title="Tasks in progress">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3v18M6 4h11l-3 4 3 4H6" fill="#c0392b" stroke="#2b0b06" stroke-width="1.5"/></svg>
+    <b id="tasks-count">0</b><span>in progress</span>
+  </div>
+  <span class="dry" id="dry" hidden>Dry run: no model calls</span>
+  <span class="live" id="live"><i></i><span>Connecting</span></span>
+</header>
+
+<main class="field" id="field">
+  <canvas id="world" aria-label="The war camp. Each orc is a worker; click one to see its job."></canvas>
+  <div class="log" id="log" aria-live="polite"></div>
+  <div class="banner" id="banner"></div>
+  <div class="tip" id="tip"><div class="wc-panel" id="tip-body"></div></div>
+</main>
+
+<footer class="console">
+  <section class="minimap wc-panel"><canvas id="minimap" aria-label="Minimap; click to move the view"></canvas></section>
+  <section class="wc-panel" id="center"></section>
+  <section class="wc-panel">
+    <div class="commands" id="commands"></div>
+  </section>
+</footer>
+
+<script>
+(() => {
+  "use strict";
+  // ---- World layout ----------------------------------------------------------------------------
+  // The clearing is laid out in 0..1600 x 0..1000; forest runs on past it to the sides so that
+  // wide windows show the whole camp.
+  const WORLD = { w: 1600, h: 1000 };
+  const BOUNDS = { x0: -420, y0: 0, x1: 2020, y1: 1000 };
+  const BW = BOUNDS.x1 - BOUNDS.x0, BH = BOUNDS.y1 - BOUNDS.y0;
+  // What the default view frames: the camp itself, without the forest around it.
+  const CAMP = { x0: 110, y0: 150, x1: 1490, y1: 920 };
+  const ORC_SCALE = 1.5;
+  const RUN_SPEED = 95;          // world px per second
+  const FRAME_TIME = 1 / 10;     // animation frames per second
+  const MIN_WORK = 1.2;          // seconds an orc works even if the job finished first
+  const ROLES = ["planner", "coder", "tester", "reviewer", "integrator", "operator"];
+  const STAGES = { pending: 0, planning: 0, checking_dependencies: 1, coding: 1, testing: 2, reviewing: 3, integrating: 4, done: 5 };
+  const TERMINAL = new Set(["done", "failed", "cancelled"]);
+
+  // Each role: its building, the orc it sends, where the orc works and what it carries back.
+  const SITES = {
+    supervisor: { name: "Great Hall", label: "Routes every result to the next role", building: "great_hall", x: 800, y: 455 },
+    planner: { name: "War Tent", label: "Planner: writes the spec and the acceptance tests", orc: "elite",
+               tents: [["tent_a", 455, 300, 1.7], ["tent_b", 545, 335, 1.5]], x: 500, y: 330, door: [500, 352],
+               work: { x: 600, y: 230, face: [1, -1], anim: "cast" }, carry: "scroll" },
+    coder: { name: "Lumber Camp", label: "Coder: writes code until the tests pass", orc: "regular",
+             tents: [["tent_b", 345, 640, 1.6]], x: 360, y: 640, door: [372, 660], chop: true, carry: "log" },
+    tester: { name: "Forge", label: "Tester: runs the test suite", orc: "heavy", building: "forge", x: 1185, y: 360,
+              door: [1120, 390], work: { x: 1085, y: 470, face: [1, 0], anim: "swing" },
+              deliver: [1255, 470], carry: "ingot" },
+    reviewer: { name: "Watchtower", label: "Reviewer: checks the locked tests are untouched", orc: "archer",
+                building: "watchtower", x: 1370, y: 640, door: [1362, 660],
+                work: { x: 1240, y: 760, face: [1, 0.25], anim: "shoot" }, target: [1405, 790] },
+    integrator: { name: "Stables", label: "Integrator: pushes the branch and opens the pull request", orc: "regular",
+                  building: "stable", x: 1000, y: 765, door: [925, 788],
+                  work: { x: 1135, y: 820, face: [1, 0], anim: "swing" }, haul: [790, 1040], carry: "crate" },
+    operator: { name: "Supply Cart", label: "Operator: checks the sandbox has the tools", orc: "regular",
+                x: 640, y: 600, door: [640, 610], work: { x: 690, y: 640, face: [1, 0], anim: "cast" }, carry: null }
+  };
+  const PATHS = [
+    [[800, 470], [800, 560], [790, 700], [790, 1040]],      // main road out through the south gap
+    [[800, 470], [640, 420], [500, 352]],                  // to the war tent
+    [[640, 420], [400, 560], [372, 660]],                  // to the lumber camp
+    [[800, 470], [960, 430], [1120, 390]],                 // to the forge
+    [[960, 430], [1240, 560], [1362, 660]],                // to the watchtower
+    [[790, 700], [925, 788]]                               // to the stables
+  ];
+  // A grove beside the lumber camp, inside the clearing, where the coders chop.
+  const CHOP_TREES = [[300, 455], [272, 530], [300, 605], [262, 690], [292, 770]];
+
+  // ---- Small helpers ----------------------------------------------------------------------------
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const token = new URLSearchParams(location.search).get("token");
+  const api = (path) => token ? `${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}` : path;
+  let seed = 7;
+  const rand = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+  const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+  const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  // FLARE sheets order their rows W, NW, N, NE, E, SE, S, SW.
+  const dirFor = (dx, dy) => (Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) + 4 + 8) % 8;
+  const senderRole = (sender) => {
+    const head = String(sender || "").split(/[:@]/)[0];
+    return SITES[head] ? head : "intake";
+  };
+
+  // ---- Assets -----------------------------------------------------------------------------------
+  let meta = null;
+  const images = {};
+  const tinted = {};
+  function loadImage(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error(`could not load ${src}`));
+      img.src = `assets/${src}`;
+    });
+  }
+  async function loadAssets() {
+    meta = await (await fetch("assets/assets.json")).json();
+    const all = [];
+    const add = (key, src) => all.push(loadImage(src).then((img) => { images[key] = img; }));
+    for (const [k, v] of Object.entries(meta.orcs)) add(`orc_${k}`, v.src);
+    for (const [k, v] of Object.entries(meta.props)) if (k !== "ground") add(`prop_${k}`, v.src);
+    for (const [k, v] of Object.entries(meta.buildings)) add(`building_${k}`, v.src);
+    add("ground_grass", meta.props.ground.grass);
+    add("ground_path", meta.props.ground.path);
+    await Promise.all(all);
+    // Orc dressing: darker, redder wood for the medieval buildings.
+    for (const k of Object.keys(meta.buildings)) tinted[k] = tint(images[`building_${k}`]);
+  }
+  function tint(img) {
+    const c = document.createElement("canvas");
+    c.width = img.width; c.height = img.height;
+    const g = c.getContext("2d");
+    g.drawImage(img, 0, 0);
+    g.globalCompositeOperation = "source-atop";
+    g.fillStyle = "rgba(70, 20, 8, 0.28)";
+    g.fillRect(0, 0, c.width, c.height);
+    g.globalCompositeOperation = "multiply";
+    g.fillStyle = "rgba(150, 120, 105, 1)";
+    g.fillRect(0, 0, c.width, c.height);
+    g.globalCompositeOperation = "destination-in";
+    g.drawImage(img, 0, 0);
+    return c;
+  }
+
+  // ---- Static scene -----------------------------------------------------------------------------
+  const scenery = [];   // { kind: "prop" | "building", key, x, y, scale }
+  const groundCanvas = document.createElement("canvas");
+
+  function nearPath(x, y, width) {
+    for (const path of PATHS) {
+      for (let i = 0; i < path.length - 1; i++) {
+        const [ax, ay] = path[i], [bx, by] = path[i + 1];
+        const dx = bx - ax, dy = by - ay;
+        const t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)));
+        if (Math.hypot(x - (ax + t * dx), y - (ay + t * dy)) < width) return true;
+      }
+    }
+    return false;
+  }
+
+  function buildScene() {
+    const g = meta.props.ground;
+    groundCanvas.width = BW; groundCanvas.height = BH;
+    const ctx = groundCanvas.getContext("2d");
+    ctx.translate(-BOUNDS.x0, -BOUNDS.y0);
+    ctx.fillStyle = "#3d4a26";
+    ctx.fillRect(BOUNDS.x0, BOUNDS.y0, BW, BH);
+    seed = 11;
+    for (let row = -1; row * (g.th / 2) < BOUNDS.y1 + g.th; row++) {
+      for (let col = Math.floor(BOUNDS.x0 / g.tw) - 1; col * g.tw < BOUNDS.x1 + g.tw; col++) {
+        const x = col * g.tw + (row % 2 ? g.tw / 2 : 0);
+        const y = row * (g.th / 2);
+        const cx = x + g.tw / 2, cy = y + g.th / 2;
+        const strip = nearPath(cx, cy, 24) ? images.ground_path : images.ground_grass;
+        const variant = Math.floor(rand() * g.count);
+        ctx.drawImage(strip, variant * g.tw, 0, g.tw, g.th, x, y, g.tw, g.th);
+      }
+    }
+    // Darken the forest floor toward the edges.
+    const vignette = ctx.createRadialGradient(WORLD.w / 2, WORLD.h / 2, 300, WORLD.w / 2, WORLD.h / 2, 1100);
+    vignette.addColorStop(0, "rgba(0,0,0,0)");
+    vignette.addColorStop(1, "rgba(5,10,0,0.6)");
+    ctx.fillStyle = vignette;
+    ctx.fillRect(BOUNDS.x0, BOUNDS.y0, BW, BH);
+
+    // Buildings and their camps.
+    for (const [role, site] of Object.entries(SITES)) {
+      if (site.building) scenery.push({ kind: "building", key: site.building, x: site.x, y: site.y, scale: 1, role });
+      for (const [key, x, y, scale] of site.tents || []) scenery.push({ kind: "prop", key, x, y, scale, role });
+    }
+    const props = [
+      ["bonfire", 560, 400, 1.3], ["signpost", 610, 215, 1.3], ["crate_a", 430, 330, 1.2],
+      ["woodpile_a", 430, 680, 1.4], ["woodpile_b", 465, 655, 1.4], ["stump", 330, 720, 1.3], ["stump", 250, 610, 1.2],
+      ["anvil", 1105, 470, 1.4], ["chest", 1270, 478, 1.4], ["crate_a", 1170, 820, 1.4], ["crate_b", 1205, 845, 1.4],
+      ["crate_b", 1172, 862, 1.3], ["rock_a", 700, 300, 1.4], ["rock_b", 1000, 640, 1.3], ["bush_a", 660, 760, 1.4],
+      ["bush_c", 930, 620, 1.3], ["tuft_a", 560, 520, 1.3], ["tuft_b", 1040, 560, 1.3], ["bush_e", 1270, 880, 1.3],
+      ["bush_d", 320, 420, 1.3], ["rock_a", 1460, 470, 1.2], ["tuft_a", 260, 520, 1.2], ["bush_f", 840, 300, 1.3]
+    ];
+    for (const [key, x, y, scale] of props) scenery.push({ kind: "prop", key, x, y, scale });
+    scenery.push({ kind: "target", x: SITES.reviewer.target[0], y: SITES.reviewer.target[1] });
+    for (const role of ["planner", "coder", "tester", "reviewer", "integrator"]) {
+      const s = SITES[role];
+      scenery.push({ kind: "banner", x: s.door[0] - 34, y: s.door[1] + 6, role });
+    }
+    scenery.push({ kind: "banner", x: 735, y: 480, role: "supervisor" }, { kind: "banner", x: 865, y: 480, role: "supervisor" });
+    // Palisade stakes around the hall.
+    for (let i = 0; i < 9; i++) {
+      const a = Math.PI * (0.15 + i * 0.09);
+      scenery.push({ kind: "stake", x: 800 + Math.cos(a) * 170, y: 455 - Math.sin(a) * 85 });
+    }
+
+    // The tree line: a jittered grid, everywhere outside the clearing except the south road.
+    seed = 3;
+    const pines = ["pine_a", "pine_b", "pine_c", "pine_d"], oaks = ["oak_a", "oak_b", "oak_c", "oak_d"], dead = ["dead_a", "dead_b", "dead_c"];
+    for (let y = BOUNDS.y0 - 40; y < BOUNDS.y1 + 140; y += 52) {
+      for (let x = BOUNDS.x0 - 40; x < BOUNDS.x1 + 60; x += 58) {
+        const jx = x + (rand() - 0.5) * 40, jy = y + (rand() - 0.5) * 30;
+        // The tree line sits 170px in from the sides, 130px from the top and 80px from the bottom.
+        const nx = (jx - WORLD.w / 2) / (WORLD.w / 2 - 170);
+        const ny = jy < WORLD.h / 2 ? (jy - WORLD.h / 2) / (WORLD.h / 2 - 130) : (jy - WORLD.h / 2) / (WORLD.h / 2 - 80);
+        const edge = Math.max(Math.abs(nx), Math.abs(ny)) + (rand() - 0.5) * 0.12;
+        if (edge < 1) continue;
+        if (jy > WORLD.h - 200 && Math.abs(jx - 790) < 70) continue;   // keep the road open
+        // Keep the coders' trees, and the spot in front of each, clear of other trees.
+        // Tall crowns south of a spot would hide the orc there, so clear a band below each one.
+        if (CHOP_TREES.some(([tx, ty]) => Math.hypot(jx - tx, jy - ty) < 60 || (Math.abs(jx - tx - 34) < 85 && jy > ty - 40 && jy < ty + 270))) continue;
+        const r = rand();
+        const key = r < 0.5 ? pines[Math.floor(rand() * 4)] : r < 0.92 ? oaks[Math.floor(rand() * 4)] : dead[Math.floor(rand() * 3)];
+        scenery.push({ kind: "prop", key, x: jx, y: jy, scale: 1.05 + rand() * 0.35 });
+      }
+    }
+    for (const [x, y] of CHOP_TREES) scenery.push({ kind: "prop", key: pines[Math.floor(rand() * 4)], x, y, scale: 1.15 });
+  }
+
+  // ---- Live state -------------------------------------------------------------------------------
+  const state = {
+    tasks: new Map(), messages: new Map(), workers: new Map(), output: new Map(),
+    lastStage: new Map(), units: new Map(), jobUnit: new Map(), hallPulse: 0, dryRun: false
+  };
+  let selected = null;   // unit key
+  window.warcamp = { state };   // for poking at from the browser console
+
+  // One orc per (worker, role): a worker serving several roles has an orc at each building.
+  function unitKey(worker, role) { return `${worker}#${role}`; }
+
+  function ensureUnits(worker) {
+    for (const role of worker.roles) {
+      const site = SITES[role];
+      if (!site) continue;
+      const key = unitKey(worker.id, role);
+      if (state.units.has(key)) continue;
+      const index = [...state.units.values()].filter((u) => u.role === role).length;
+      const home = [site.door[0] + 22 + index * 26, site.door[1] + 14 + (index % 2) * 10];
+      state.units.set(key, {
+        key, worker: worker.id, role, orc: site.orc, index, home,
+        x: home[0], y: home[1], dir: 6, anim: "stance", t: rand() * 2,
+        state: "idle", path: [], job: null, carry: null, bubble: null, float: null, leaving: false
+      });
+    }
+  }
+
+  function removeWorker(id) {
+    for (const u of state.units.values()) if (u.worker === id) u.leaving = true;
+  }
+
+  function workSpot(u) {
+    const site = SITES[u.role];
+    if (site.chop) {
+      const [tx, ty] = CHOP_TREES[u.index % CHOP_TREES.length];
+      return { x: tx + 34, y: ty + 10, face: [-1, -0.2], anim: "swing" };
+    }
+    return { ...site.work, x: site.work.x + (u.index % 3) * 16, y: site.work.y + Math.floor(u.index / 3) * 18 + (u.index % 3) * 6 };
+  }
+
+  function go(u, points, then) {
+    u.path = points.map((p) => [p[0], p[1]]);
+    u.then = then;
+    u.state = "walking";
+  }
+
+  // A claimed job: leave the building, walk to the work spot, then work.
+  function startJob(u, msg, claimedAt) {
+    const spot = workSpot(u);
+    u.job = { id: msg.id, task: msg.task_id, type: msg.type, attempt: msg.payload && msg.payload.attempt, startedAt: claimedAt || Date.now(), result: null };
+    u.carry = null;
+    state.jobUnit.set(msg.id, u.key);
+    const site = SITES[u.role];
+    go(u, [site.door, [spot.x, spot.y]], () => { u.state = "working"; u.workT = 0; u.spot = spot; });
+  }
+
+  // The result is in: bring it back (or come back empty-handed and hurt).
+  function finishJob(u, outcome) {
+    if (!u.job) return;
+    u.job.result = outcome;
+    if (u.state === "working" && u.workT < MIN_WORK) return;   // picked up by update() once MIN_WORK passes
+    if (u.state !== "working") return;                          // still walking out; update() handles arrival
+    headHome(u);
+  }
+
+  function headHome(u) {
+    const outcome = u.job.result;
+    const site = SITES[u.role];
+    u.float = { text: outcome === "good" ? "Done" : outcome === "bad" ? "Failed" : "Stopped", good: outcome === "good", t: 0 };
+    const back = () => {
+      const route = [];
+      if (outcome === "good" && site.deliver) route.push(site.deliver);
+      if (outcome === "good" && site.haul) route.push([site.door[0] - 60, site.door[1] + 90], site.haul, [site.door[0] - 60, site.door[1] + 90]);
+      route.push(site.door, u.home);
+      u.carry = outcome === "good" ? site.carry : null;
+      go(u, route, () => { u.state = "idle"; u.carry = null; u.job = null; u.dropWaypoint = null; });
+      // Drop the load at the chest or at the edge of the map.
+      if (outcome === "good" && (site.deliver || site.haul)) u.dropWaypoint = site.deliver ? 0 : 2;
+    };
+    if (outcome === "bad") { u.state = "hurt"; u.hurtT = 0; u.afterHurt = back; } else back();
+  }
+
+  // ---- Events -----------------------------------------------------------------------------------
+  function outcomeOf(type, payload) {
+    if (/failed|declined/.test(type)) return "bad";
+    if (payload && (payload.passed === false || payload.approved === false)) return "bad";
+    return "good";
+  }
+
+  function apply(e, live) {
+    const d = e.data || {};
+    switch (e.kind) {
+      case "task.created":
+      case "task.updated": {
+        const prev = state.tasks.get(e.task_id);
+        if (prev && STAGES[prev.status] !== undefined) state.lastStage.set(e.task_id, STAGES[prev.status]);
+        state.tasks.set(e.task_id, { ...(prev || {}), ...d });
+        if (live && prev && prev.status !== d.status) {
+          if (d.status === "done") announce(`${e.task_id} is done`, false);
+          if (d.status === "failed" || d.status === "blocked") announce(`${e.task_id} ${d.status}`, true);
+        }
+        break;
+      }
+      case "message.posted": {
+        state.messages.set(e.message_id, { id: e.message_id, task_id: e.task_id, type: d.type, role: d.role, state: "pending", payload: d.payload || {}, sender: d.sender });
+        const unitKey = state.jobUnit.get(d.in_reply_to);
+        if (unitKey && state.units.get(unitKey)) finishJob(state.units.get(unitKey), outcomeOf(d.type, d.payload));
+        if (d.role === "supervisor") state.hallPulse = 1;
+        break;
+      }
+      case "message.claimed": {
+        const m = state.messages.get(e.message_id) || { id: e.message_id, task_id: e.task_id, type: d.type, role: d.role, payload: {} };
+        m.state = "claimed"; m.claimed_by = e.actor;
+        state.messages.set(e.message_id, m);
+        if (d.role === "supervisor") { state.hallPulse = 1; break; }
+        const u = state.units.get(unitKey(e.actor, d.role));
+        if (u) startJob(u, m, Date.parse(e.at));
+        break;
+      }
+      case "message.requeued":
+      case "message.dead":
+      case "message.cancelled": {
+        const m = state.messages.get(e.message_id);
+        if (m) m.state = e.kind === "message.requeued" ? "pending" : "gone";
+        if (e.kind !== "message.requeued") state.messages.delete(e.message_id);
+        const key = state.jobUnit.get(e.message_id);
+        const u = key && state.units.get(key);
+        if (u && u.job && u.job.id === e.message_id && !u.job.result) {
+          u.job.result = "stopped";
+          if (u.state === "working") headHome(u);
+        }
+        break;
+      }
+      case "message.done":
+        state.messages.delete(e.message_id);
+        break;
+      case "agent.output": {
+        const lines = state.output.get(e.message_id) || [];
+        const text = (lines.partial || "") + (d.text || "");
+        const parts = text.split("\n");
+        const partial = parts.pop();
+        const next = lines.concat(parts.filter((l) => l.trim())).slice(-12);
+        next.partial = partial;
+        state.output.set(e.message_id, next);
+        const key = state.jobUnit.get(e.message_id);
+        const u = key && state.units.get(key);
+        if (u && next.length) u.bubble = { text: next[next.length - 1], t: 0 };
+        break;
+      }
+      case "worker.started":
+        state.workers.set(e.actor, { id: e.actor, roles: d.roles || [] });
+        ensureUnits(state.workers.get(e.actor));
+        break;
+      case "worker.stopped":
+        state.workers.delete(e.actor);
+        removeWorker(e.actor);
+        break;
+    }
+    if (live) logEvent(e);
+    dirtyPanels = true;
+  }
+
+  // ---- Simulation -------------------------------------------------------------------------------
+  function update(dt) {
+    state.hallPulse = Math.max(0, state.hallPulse - dt * 1.5);
+    for (const u of [...state.units.values()]) {
+      u.t += dt;
+      if (u.bubble) { u.bubble.t += dt; if (u.bubble.t > 4) u.bubble = null; }
+      if (u.float) { u.float.t += dt; if (u.float.t > 1.6) u.float = null; }
+      if (u.state === "walking") {
+        const target = u.path[0];
+        if (!target) { const then = u.then; u.then = null; u.state = "idle"; then && then(); continue; }
+        const dx = target[0] - u.x, dy = target[1] - u.y, d = Math.hypot(dx, dy);
+        const step = RUN_SPEED * dt;
+        u.anim = "run";
+        if (d > 0.5) u.dir = dirFor(dx, dy);
+        if (d <= step) {
+          u.x = target[0]; u.y = target[1]; u.path.shift();
+          if (u.dropWaypoint !== null && u.dropWaypoint !== undefined) {
+            if (u.dropWaypoint === 0) { u.carry = null; u.dropWaypoint = null; } else u.dropWaypoint--;
+          }
+        } else { u.x += dx / d * step; u.y += dy / d * step; }
+      } else if (u.state === "working") {
+        u.workT += dt;
+        u.anim = u.spot.anim;
+        u.dir = dirFor(u.spot.face[0], u.spot.face[1]);
+        if (u.job && u.job.result && u.workT >= MIN_WORK) headHome(u);
+      } else if (u.state === "hurt") {
+        u.hurtT += dt;
+        u.anim = "hit";
+        if (u.hurtT > 0.8) { u.state = "idle"; u.afterHurt(); }
+      } else {
+        u.anim = "stance";
+        u.dir = 6;
+        if (u.leaving) state.units.delete(u.key);
+        // A job claimed before the walk out finished arrives here with its result already in.
+        if (u.job && u.job.result && u.state === "idle" && !u.path.length) headHome(u);
+      }
+    }
+  }
+
+  // ---- Drawing ----------------------------------------------------------------------------------
+  const canvas = $("world"), ctx = canvas.getContext("2d");
+  const cam = { x: (CAMP.x0 + CAMP.x1) / 2, y: (CAMP.y0 + CAMP.y1) / 2, scale: 1 };
+  // Smallest zoom: the bounds just cover the view.
+  const minScale = () => Math.max(viewW / BW, viewH / BH);
+  let viewW = 0, viewH = 0, dpr = 1;
+
+  function resize() {
+    const r = canvas.getBoundingClientRect();
+    dpr = window.devicePixelRatio || 1;
+    viewW = r.width; viewH = r.height;
+    canvas.width = Math.round(viewW * dpr); canvas.height = Math.round(viewH * dpr);
+    cam.scale = Math.max(minScale(), Math.min(viewW / (CAMP.x1 - CAMP.x0), viewH / (CAMP.y1 - CAMP.y0)));
+    cam.x = (CAMP.x0 + CAMP.x1) / 2; cam.y = (CAMP.y0 + CAMP.y1) / 2;
+    clampCam();
+    const mm = $("minimap"), mr = mm.getBoundingClientRect();
+    mm.width = Math.round(mr.width * dpr); mm.height = Math.round(mr.height * dpr);
+  }
+  function clampCam() {
+    const hw = viewW / cam.scale / 2, hh = viewH / cam.scale / 2;
+    cam.x = Math.min(Math.max(cam.x, BOUNDS.x0 + hw), BOUNDS.x1 - hw);
+    cam.y = Math.min(Math.max(cam.y, BOUNDS.y0 + hh), BOUNDS.y1 - hh);
+    if (hw * 2 >= BW) cam.x = (BOUNDS.x0 + BOUNDS.x1) / 2;
+    if (hh * 2 >= BH) cam.y = (BOUNDS.y0 + BOUNDS.y1) / 2;
+  }
+  const toScreen = (x, y) => [(x - cam.x) * cam.scale + viewW / 2, (y - cam.y) * cam.scale + viewH / 2];
+  const toWorld = (sx, sy) => [(sx - viewW / 2) / cam.scale + cam.x, (sy - viewH / 2) / cam.scale + cam.y];
+
+  function drawProp(key, x, y, scale) {
+    const m = meta.props[key], img = images[`prop_${key}`];
+    ctx.drawImage(img, x - m.ax * scale, y - m.ay * scale, m.w * scale, m.h * scale);
+  }
+
+  function drawBuilding(s, time) {
+    const m = meta.buildings[s.key];
+    ctx.drawImage(tinted[s.key], s.x - m.ax, s.y - m.ay, m.w, m.h);
+    if (s.role === "supervisor" && state.hallPulse > 0) {
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      ctx.globalAlpha = state.hallPulse * 0.35;
+      ctx.drawImage(tinted[s.key], s.x - m.ax, s.y - m.ay, m.w, m.h);
+      ctx.restore();
+    }
+  }
+
+  // Red war banner with a white skull mark; the waiting-jobs count is sewn on for role banners.
+  function drawBanner(s, time) {
+    const sway = reducedMotion ? 0 : Math.sin(time * 2 + s.x) * 3;
+    ctx.save();
+    ctx.translate(s.x, s.y);
+    ctx.strokeStyle = "#2b1a0c"; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -64); ctx.stroke();
+    ctx.fillStyle = "#d8cdb5";
+    ctx.beginPath(); ctx.moveTo(-4, -64); ctx.lineTo(0, -72); ctx.lineTo(4, -64); ctx.fill();
+    ctx.fillStyle = "#8e1b12"; ctx.strokeStyle = "#3b0905"; ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(1, -62); ctx.lineTo(24 + sway, -60); ctx.lineTo(22 + sway, -36); ctx.lineTo(13 + sway, -40); ctx.lineTo(4, -34);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    const waiting = s.role && s.role !== "supervisor" ? [...state.messages.values()].filter((m) => m.role === s.role && m.state === "pending").length : 0;
+    ctx.fillStyle = "#efe4cc";
+    if (waiting) {
+      ctx.font = "700 13px Cinzel, Georgia, serif"; ctx.textAlign = "center";
+      ctx.fillText(String(waiting), 13 + sway * 0.6, -43);
+    } else {
+      ctx.beginPath(); ctx.arc(13 + sway * 0.6, -50, 4.5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "#8e1b12"; ctx.fillRect(10.5 + sway * 0.6, -51, 1.8, 1.8); ctx.fillRect(13.8 + sway * 0.6, -51, 1.8, 1.8);
+    }
+    ctx.restore();
+  }
+
+  function drawStake(s) {
+    ctx.save(); ctx.translate(s.x, s.y);
+    ctx.fillStyle = "#4a3220"; ctx.strokeStyle = "#20140a";
+    ctx.beginPath(); ctx.moveTo(-4, 0); ctx.lineTo(-3, -26); ctx.lineTo(0, -36); ctx.lineTo(3, -26); ctx.lineTo(4, 0); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "rgba(0,0,0,0.25)"; ctx.beginPath(); ctx.ellipse(6, 0, 9, 3, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
+  function drawTarget(s) {
+    ctx.save(); ctx.translate(s.x, s.y);
+    ctx.strokeStyle = "#3a2614"; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(-10, 0); ctx.lineTo(0, -30); ctx.lineTo(10, 0); ctx.stroke();
+    const rings = ["#e9dcc0", "#8e1b12", "#e9dcc0", "#8e1b12"];
+    rings.forEach((c, i) => { ctx.fillStyle = c; ctx.beginPath(); ctx.ellipse(0, -32, 15 - i * 3.6, 17 - i * 4, 0, 0, Math.PI * 2); ctx.fill(); });
+    ctx.restore();
+  }
+
+  function drawCarry(u) {
+    const [x, y] = [u.x, u.y - 62 * ORC_SCALE * 0.8];
+    if (u.carry === "log") drawProp("woodpile_b", x, y + 18, 0.5);
+    else if (u.carry === "crate") drawProp("crate_a", x, y + 18, 0.6);
+    else if (u.carry === "ingot") {
+      ctx.fillStyle = "#b9bfc7"; ctx.strokeStyle = "#4b4f55";
+      ctx.beginPath(); ctx.moveTo(x - 9, y + 4); ctx.lineTo(x - 6, y - 2); ctx.lineTo(x + 6, y - 2); ctx.lineTo(x + 9, y + 4); ctx.closePath(); ctx.fill(); ctx.stroke();
+    } else if (u.carry === "scroll") {
+      ctx.fillStyle = "#e9dcc0"; ctx.strokeStyle = "#7a5a2a";
+      ctx.fillRect(x - 8, y - 3, 16, 7); ctx.strokeRect(x - 8, y - 3, 16, 7);
+      ctx.fillStyle = "#8e1b12"; ctx.fillRect(x - 1, y - 3, 2, 7);
+    }
+  }
+
+  function drawUnit(u, ghost) {
+    const m = meta.orcs[u.orc], img = images[`orc_${u.orc}`];
+    const [start, count] = m.anims[u.anim];
+    const frame = start + (Math.floor(u.t / FRAME_TIME) % count);
+    const s = ORC_SCALE;
+    if (selected === u.key && !ghost) {
+      ctx.strokeStyle = "#7dff6a"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.ellipse(u.x, u.y, 18, 8, 0, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.drawImage(img, frame * m.fw, u.dir * m.fh, m.fw, m.fh, u.x - m.ax * s, u.y - m.ay * s, m.fw * s, m.fh * s);
+    if (u.carry && !ghost) drawCarry(u);
+  }
+
+  function drawOverhead(u) {
+    const top = u.y - 75 * ORC_SCALE;
+    if (u.bubble && u.state === "working") {
+      const text = u.bubble.text.length > 38 ? `${u.bubble.text.slice(0, 37)}…` : u.bubble.text;
+      ctx.font = "11px ui-monospace, Menlo, monospace";
+      const w = ctx.measureText(text).width + 12;
+      ctx.globalAlpha = Math.min(1, (4 - u.bubble.t) * 2);
+      ctx.fillStyle = "rgba(20, 14, 8, 0.82)"; ctx.strokeStyle = "#b08a3a"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.roundRect(u.x - w / 2, top - 20, w, 17, 3); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = "#f3e7c8"; ctx.textAlign = "center"; ctx.fillText(text, u.x, top - 7.5);
+      ctx.globalAlpha = 1;
+    }
+    if (u.float) {
+      ctx.font = "700 14px Cinzel, Georgia, serif"; ctx.textAlign = "center";
+      ctx.globalAlpha = Math.max(0, 1 - u.float.t / 1.6);
+      ctx.fillStyle = "#000"; ctx.fillText(u.float.text, u.x + 1, top - 24 - u.float.t * 22 + 1);
+      ctx.fillStyle = u.float.good ? "#f2c45a" : "#ff6b5a"; ctx.fillText(u.float.text, u.x, top - 24 - u.float.t * 22);
+      ctx.globalAlpha = 1;
+    }
+    if (u.state === "working" && u.job) {
+      // Progress clock: a thin ring filling over ten seconds of work.
+      const frac = Math.min(1, (Date.now() - u.job.startedAt) / 10000);
+      ctx.strokeStyle = "rgba(0,0,0,.6)"; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(u.x + 20, top + 6, 6, 0, Math.PI * 2); ctx.stroke();
+      ctx.strokeStyle = "#f2c45a"; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(u.x + 20, top + 6, 6, -Math.PI / 2, -Math.PI / 2 + frac * Math.PI * 2); ctx.stroke();
+    }
+  }
+
+  function render(time) {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = "#0b1006"; ctx.fillRect(0, 0, viewW, viewH);
+    ctx.setTransform(dpr * cam.scale, 0, 0, dpr * cam.scale, dpr * (viewW / 2 - cam.x * cam.scale), dpr * (viewH / 2 - cam.y * cam.scale));
+    ctx.drawImage(groundCanvas, BOUNDS.x0, BOUNDS.y0);
+    const drawables = scenery.map((s) => ({ y: s.y, s }));
+    for (const u of state.units.values()) drawables.push({ y: u.y, u });
+    drawables.sort((a, b) => a.y - b.y);
+    for (const d of drawables) {
+      if (d.u) { drawUnit(d.u); continue; }
+      const s = d.s;
+      if (s.kind === "prop") drawProp(s.key, s.x, s.y, s.scale);
+      else if (s.kind === "building") drawBuilding(s, time);
+      else if (s.kind === "banner") drawBanner(s, time);
+      else if (s.kind === "stake") drawStake(s);
+      else if (s.kind === "target") drawTarget(s);
+    }
+    // Like WC3, orcs behind trees or buildings still show through as a faint silhouette.
+    ctx.globalAlpha = 0.35;
+    for (const u of state.units.values()) drawUnit(u, true);
+    ctx.globalAlpha = 1;
+    for (const u of state.units.values()) drawOverhead(u);
+    if (hoverSite) outlineSite(hoverSite);
+  }
+
+  function outlineSite(role) {
+    const site = SITES[role];
+    ctx.strokeStyle = "rgba(242, 196, 90, .7)"; ctx.lineWidth = 2; ctx.setLineDash([6, 5]);
+    ctx.beginPath(); ctx.ellipse(site.x, site.y, 120, 52, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  function renderMinimap() {
+    const mm = $("minimap"), g = mm.getContext("2d");
+    const sx = mm.width / BW, sy = mm.height / BH;
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.drawImage(groundCanvas, 0, 0, mm.width, mm.height);
+    g.setTransform(1, 0, 0, 1, -BOUNDS.x0 * sx, -BOUNDS.y0 * sy);
+    g.fillStyle = "rgba(10, 30, 5, .55)";
+    for (const s of scenery) if (s.kind === "prop" && /pine|oak|dead/.test(s.key)) g.fillRect(s.x * sx - 2, s.y * sy - 2, 4, 4);
+    for (const [role, site] of Object.entries(SITES)) {
+      if (!site.building && !site.tents) continue;
+      g.fillStyle = role === "supervisor" ? "#f2c45a" : "#c0392b";
+      g.fillRect(site.x * sx - 5, site.y * sy - 5, 10, 10);
+    }
+    for (const u of state.units.values()) {
+      g.fillStyle = u.key === selected ? "#7dff6a" : u.state === "idle" ? "#d9cdb0" : "#ff5a3c";
+      g.fillRect(u.x * sx - 2, u.y * sy - 2, 4, 4);
+    }
+    const hw = viewW / cam.scale / 2, hh = viewH / cam.scale / 2;
+    g.strokeStyle = "#fff"; g.lineWidth = 1;
+    g.strokeRect((cam.x - hw) * sx, (cam.y - hh) * sy, hw * 2 * sx, hh * 2 * sy);
+  }
+
+  // ---- Panels -----------------------------------------------------------------------------------
+  let dirtyPanels = true;
+  const portrait = document.createElement("canvas");
+
+  // Only touch the DOM when a panel changed, so a button isn't replaced mid-click.
+  function setHtml(el, html) {
+    if (el.dataset.html === html) return false;
+    el.innerHTML = html;
+    el.dataset.html = html;
+    return true;
+  }
+
+  function renderPanels() {
+    const u = selected && state.units.get(selected);
+    if (selected && !u) selected = null;
+    setHtml($("center"), u ? unitHtml(u) : tasksHtml());
+    if (u) drawPortrait(u);
+    setHtml($("commands"), commandsHtml(u));
+    const tasks = [...state.tasks.values()];
+    $("lumber").textContent = tasks.reduce((s, t) => s + (t.tokens_used || 0), 0).toLocaleString();
+    $("gold").textContent = `$${(tasks.reduce((s, t) => s + (t.cost_cents || 0), 0) / 100).toFixed(2)}`;
+    const units = [...state.units.values()];
+    $("food").textContent = `${units.filter((x) => x.job).length}/${units.length}`;
+    $("tasks-count").textContent = tasks.filter((t) => !TERMINAL.has(t.status) && t.status !== "blocked").length;
+  }
+
+  function unitHtml(u) {
+    const site = SITES[u.role];
+    const job = u.job;
+    const task = job && state.tasks.get(job.task);
+    const lines = job ? (state.output.get(job.id) || []).slice(-6) : [];
+    const doing = !job ? "Waiting for orders" : u.state === "walking" && !job.result ? "Heading out" : u.state === "working" ? "Working" : "Returning";
+    return `<div class="unit">
+      <canvas class="portrait" id="portrait" width="224" height="264" aria-hidden="true"></canvas>
+      <div>
+        <h2>${esc(site.name)} ${esc(u.role)}</h2>
+        <div class="sub">${esc(u.worker)}</div>
+        <div class="meta"><span><b>${esc(doing)}</b></span>
+          ${job ? `<span>Task <b>${esc(job.task)}</b></span><span>${esc(job.type)}${job.attempt ? `, attempt ${job.attempt}` : ""}</span>
+          <span>${Math.round((Date.now() - job.startedAt) / 1000)}s</span>` : ""}</div>
+        ${task ? `<div class="sub">${esc(task.title || "")}</div>` : `<div class="sub">${esc(site.label)}</div>`}
+        <div class="out">${lines.length ? lines.map((l) => `<span>${esc(l)}</span>`).join("\n") : `<span class="empty">${job ? "No output yet" : "Idle"}</span>`}</div>
+      </div></div>`;
+  }
+
+  function drawPortrait(u) {
+    const c = $("portrait");
+    if (!c) return;
+    const g = c.getContext("2d"), m = meta.orcs[u.orc], img = images[`orc_${u.orc}`];
+    const [start, count] = m.anims[u.anim === "run" ? "stance" : u.anim];
+    const frame = start + (Math.floor(u.t / FRAME_TIME) % count);
+    g.clearRect(0, 0, c.width, c.height);
+    // Zoomed in on the orc's upper body, facing the viewer.
+    const s = 4.2;
+    g.drawImage(img, frame * m.fw, 6 * m.fh, m.fw, m.fh, c.width / 2 - m.ax * s, c.height + 40 - m.ay * s, m.fw * s, m.fh * s);
+  }
+
+  function tasksHtml() {
+    const tasks = [...state.tasks.values()].sort((a, b) => {
+      const ta = TERMINAL.has(a.status), tb = TERMINAL.has(b.status);
+      return ta !== tb ? (ta ? 1 : -1) : String(b.updated_at).localeCompare(String(a.updated_at));
+    }).slice(0, 30);
+    if (!tasks.length) return `<div class="tasks"><h2>Tasks</h2><div class="empty">No tasks yet. Start one with runeforge "a prompt", or run runeforge demo --warcamp.</div></div>`;
+    return `<div class="tasks"><h2>Tasks</h2>${tasks.map((t) => {
+      const stage = STAGES[t.status] ?? state.lastStage.get(t.id) ?? 0;
+      const segs = [0, 1, 2, 3, 4].map((i) => `<i class="${i < stage ? "past" : i === stage ? "now" : ""}"></i>`).join("");
+      return `<button class="task" data-task="${esc(t.id)}" title="${esc(t.status.replace(/_/g, " "))}${t.error ? `: ${esc(t.error)}` : ""}">
+        <span class="id">${esc(t.id)}</span><span class="title">${esc(t.title || "")}</span><span class="bar ${esc(t.status)}">${segs}</span></button>`;
+    }).join("")}</div>`;
+  }
+
+  function commandsHtml(u) {
+    const job = u && u.job;
+    const task = job && state.tasks.get(job.task);
+    const canCancel = task && !TERMINAL.has(task.status);
+    return `
+      <button class="wc-button" data-cmd="cancel" ${canCancel ? "" : "disabled"} title="Stop this orc's task">Cancel task</button>
+      <button class="wc-button" data-cmd="next-busy" title="Select the next orc on a job">Next busy orc</button>
+      <button class="wc-button" data-cmd="next-idle" title="Select the next idle orc">Next idle orc</button>
+      <button class="wc-button" data-cmd="tasks" ${u ? "" : "disabled"} title="Show the task list">All tasks</button>
+      <div class="credits">Art: johndh, Clint Bellanger and others
+        (<a href="https://opengameart.org/content/orc-flare-sprite-sheets" target="_blank" rel="noopener">OpenGameArt</a>, CC-BY-SA 3.0),
+        feudalwars (CC0), warcraftcn/ui (MIT). Full list in CREDITS.md.</div>`;
+  }
+
+  // ---- Log, banner, tooltip ---------------------------------------------------------------------
+  function logEvent(e) {
+    const d = e.data || {};
+    let text = null, cls = "";
+    if (e.kind === "message.claimed" && d.role !== "supervisor") text = `${SITES[d.role] ? SITES[d.role].name : d.role}: ${e.actor.split("@")[0]} took ${d.type} for ${e.task_id}`;
+    else if (e.kind === "message.posted" && d.role === "supervisor" && d.type !== "task.created") {
+      const bad = outcomeOf(d.type, d.payload) === "bad";
+      text = `${senderRole(d.sender)} reports ${d.type} for ${e.task_id}`; cls = bad ? "bad" : "";
+    } else if (e.kind === "task.created") { text = `New task ${e.task_id}: ${d.title || ""}`; cls = "good"; }
+    else if (e.kind === "message.dead") { text = `${d.type} for ${e.task_id} gave up: ${d.error}`; cls = "bad"; }
+    else if (e.kind === "worker.started") text = `${e.actor} reports for duty`;
+    else if (e.kind === "worker.stopped") text = `${e.actor} has left the camp`;
+    if (!text) return;
+    const log = $("log"), row = document.createElement("div");
+    row.className = cls; row.textContent = text;
+    log.appendChild(row);
+    while (log.childElementCount > 7) log.firstElementChild.remove();
+    setTimeout(() => { row.style.opacity = "0"; setTimeout(() => row.remove(), 1000); }, 9000);
+  }
+
+  let bannerTimer = null;
+  function announce(text, bad) {
+    const b = $("banner");
+    b.textContent = text; b.className = `banner show${bad ? " bad" : ""}`;
+    clearTimeout(bannerTimer);
+    bannerTimer = setTimeout(() => { b.className = "banner"; }, 2600);
+  }
+
+  let hoverSite = null;
+  function siteAt(wx, wy) {
+    let best = null, bestD = 1e9;
+    for (const [role, site] of Object.entries(SITES)) {
+      if (!site.building && !site.tents) continue;
+      const d = Math.hypot((wx - site.x) / 1.6, wy - (site.y - 50));
+      if (d < 90 && d < bestD) { best = role; bestD = d; }
+    }
+    return best;
+  }
+  function unitAt(wx, wy) {
+    let best = null, bestD = 30;
+    for (const u of state.units.values()) {
+      const d = Math.hypot(wx - u.x, wy - (u.y - 30));
+      if (d < bestD) { best = u; bestD = d; }
+    }
+    return best;
+  }
+  function showTip(role, sx, sy) {
+    const tip = $("tip");
+    if (!role) { tip.style.display = "none"; return; }
+    const site = SITES[role];
+    const waiting = [...state.messages.values()].filter((m) => m.role === role && m.state === "pending").length;
+    const units = [...state.units.values()].filter((u) => u.role === role);
+    $("tip-body").innerHTML = `<b>${esc(site.name)}</b>${esc(site.label)}<br>
+      <em>${units.length} orc${units.length === 1 ? "" : "s"}, ${units.filter((u) => u.job).length} on a job, ${waiting} job${waiting === 1 ? "" : "s"} waiting</em>`;
+    tip.style.display = "block";
+    const field = $("field").getBoundingClientRect();
+    tip.style.left = `${Math.min(sx + 16, field.width - 290)}px`;
+    tip.style.top = `${Math.max(sy - 90, 6)}px`;
+  }
+
+  // ---- Input ------------------------------------------------------------------------------------
+  let drag = null;
+  canvas.addEventListener("pointerdown", (ev) => {
+    drag = { x: ev.clientX, y: ev.clientY, cx: cam.x, cy: cam.y, moved: false };
+    canvas.setPointerCapture(ev.pointerId);
+  });
+  canvas.addEventListener("pointermove", (ev) => {
+    const r = canvas.getBoundingClientRect();
+    if (drag) {
+      const dx = ev.clientX - drag.x, dy = ev.clientY - drag.y;
+      if (Math.abs(dx) + Math.abs(dy) > 4) { drag.moved = true; canvas.classList.add("dragging"); }
+      if (drag.moved) { cam.x = drag.cx - dx / cam.scale; cam.y = drag.cy - dy / cam.scale; clampCam(); }
+      return;
+    }
+    const [wx, wy] = toWorld(ev.clientX - r.left, ev.clientY - r.top);
+    hoverSite = unitAt(wx, wy) ? null : siteAt(wx, wy);
+    showTip(hoverSite, ev.clientX - r.left, ev.clientY - r.top);
+  });
+  canvas.addEventListener("pointerup", (ev) => {
+    canvas.classList.remove("dragging");
+    const wasDrag = drag && drag.moved;
+    drag = null;
+    if (wasDrag) return;
+    const r = canvas.getBoundingClientRect();
+    const [wx, wy] = toWorld(ev.clientX - r.left, ev.clientY - r.top);
+    const u = unitAt(wx, wy);
+    selected = u ? u.key : null;
+    refresh();
+  });
+  canvas.addEventListener("pointerleave", () => { hoverSite = null; showTip(null); });
+  canvas.addEventListener("wheel", (ev) => {
+    ev.preventDefault();
+    const min = minScale();
+    cam.scale = Math.min(min * 3, Math.max(min, cam.scale * (ev.deltaY < 0 ? 1.1 : 0.9)));
+    clampCam();
+  }, { passive: false });
+  $("minimap").addEventListener("click", (ev) => {
+    const r = ev.currentTarget.getBoundingClientRect();
+    cam.x = BOUNDS.x0 + (ev.clientX - r.left) / r.width * BW;
+    cam.y = BOUNDS.y0 + (ev.clientY - r.top) / r.height * BH;
+    clampCam();
+  });
+
+  function focus(u) {
+    selected = u.key;
+    cam.x = u.x; cam.y = u.y; clampCam();
+    refresh();
+  }
+  // Clicks redraw the panels at once rather than on the next animation frame.
+  function refresh() {
+    renderPanels(); renderMinimap();
+    dirtyPanels = false;
+  }
+  let cycle = 0;
+  document.addEventListener("click", async (ev) => {
+    const taskButton = ev.target.closest("[data-task]");
+    if (taskButton) {
+      const u = [...state.units.values()].find((x) => x.job && x.job.task === taskButton.dataset.task);
+      if (u) focus(u);
+      return;
+    }
+    const button = ev.target.closest("[data-cmd]");
+    if (!button) return;
+    const cmd = button.dataset.cmd;
+    if (cmd === "tasks") { selected = null; refresh(); }
+    if (cmd === "next-busy" || cmd === "next-idle") {
+      const list = [...state.units.values()].filter((u) => (cmd === "next-busy") === Boolean(u.job));
+      if (list.length) focus(list[cycle++ % list.length]);
+    }
+    if (cmd === "cancel") {
+      const u = state.units.get(selected);
+      if (!u || !u.job) return;
+      button.disabled = true;
+      const res = await fetch(api(`/api/tasks/${encodeURIComponent(u.job.task)}/cancel`), {
+        method: "POST", headers: { "content-type": "application/json", "x-runeforge-dashboard": "1" }, body: "{}"
+      });
+      if (!res.ok) announce((await res.json()).error || "Could not cancel", true);
+    }
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") { selected = null; refresh(); }
+  });
+
+  // ---- Startup ----------------------------------------------------------------------------------
+  function setLive(kind, text) {
+    $("live").className = `live ${kind}`;
+    $("live").querySelector("span").textContent = text;
+  }
+
+  async function connect() {
+    const res = await fetch(api("/api/state"));
+    if (!res.ok) throw new Error(`/api/state returned ${res.status}`);
+    const snap = await res.json();
+    state.dryRun = snap.dry_run;
+    $("dry").hidden = !snap.dry_run;
+    snap.tasks.forEach((t) => state.tasks.set(t.id, t));
+    snap.workers.forEach((w) => { state.workers.set(w.id, w); ensureUnits(w); });
+    for (const m of snap.messages) {
+      state.messages.set(m.id, m);
+      // Orcs already on a job start at their work spot.
+      const u = m.state === "claimed" && state.units.get(unitKey(m.claimed_by, m.role));
+      if (u) {
+        startJob(u, m, Date.now());
+        const spot = workSpot(u);
+        u.x = spot.x; u.y = spot.y; u.path = []; u.state = "working"; u.workT = 0; u.spot = spot;
+      }
+    }
+    const source = new EventSource(api(`/api/events?after=${snap.cursor}`));
+    source.onopen = () => setLive("on", "Live");
+    source.onerror = () => setLive("off", "Reconnecting");
+    source.onmessage = (msg) => apply(JSON.parse(msg.data), true);
+  }
+
+  let last = performance.now(), panelClock = 0;
+  function frame(now) {
+    const dt = Math.min(0.1, (now - last) / 1000);
+    last = now;
+    update(dt);
+    render(now / 1000);
+    panelClock += dt;
+    if (dirtyPanels || panelClock > 0.5) {
+      renderPanels(); renderMinimap();
+      dirtyPanels = false; panelClock = 0;
+    } else if (selected) {
+      const u = state.units.get(selected);
+      if (u) drawPortrait(u);
+    }
+    requestAnimationFrame(frame);
+  }
+
+  window.addEventListener("resize", resize);
+  loadAssets().then(() => {
+    buildScene();
+    resize();
+    requestAnimationFrame(frame);
+    return connect();
+  }).catch((err) => { setLive("off", err.message); console.error(err); });
+})();
+</script>
+</body>
+</html>

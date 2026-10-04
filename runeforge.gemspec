@@ -17,7 +17,7 @@ Gem::Specification.new do |spec|
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.2"
 
-  spec.files = Dir["lib/**/*.rb", "lib/**/*.html", "db/**/*.rb", "exe/*", "docker/*", "README.md", "LICENSE.txt", "runeforge.yml.example"]
+  spec.files = Dir["lib/**/*.rb", "lib/**/*.html", "lib/**/*.webp", "lib/**/assets.json", "db/**/*.rb", "exe/*", "docker/*", "README.md", "LICENSE.txt", "CREDITS.md", "runeforge.yml.example"]
   spec.bindir = "exe"
   spec.executables = ["runeforge"]
   spec.require_paths = ["lib"]

@@ -108,6 +108,7 @@ the only secret that enters a container), `GITHUB_TOKEN`, `JIRA_EMAIL`, `JIRA_AP
 | `runeforge up / down / ps` | Start, stop and list the background supervisor and workers |
 | `runeforge webhook` | Serves `POST /webhooks/jira?token=…` for issues labelled `runeforge` |
 | `runeforge dashboard [--port 9393]` | Serves the live dashboard (see below) |
+| `runeforge warcamp [--port 9393]` | The same live view, drawn as an orc war camp |
 | `runeforge demo` | Dry-run agents forever, plus the dashboard; no LLM, git or network |
 | `runeforge worker --role R --dry-run` | A worker whose agents only go through the motions |
 
@@ -174,8 +175,22 @@ one process with its own `~/.runeforge/demo.db`, until Ctrl-C:
 
 ```sh
 runeforge demo                         # then open http://127.0.0.1:9393/
+runeforge demo --warcamp               # the same, as the war camp
 runeforge demo --concurrency 5 --min-seconds 2 --max-seconds 4
 ```
+
+**War camp.** `runeforge warcamp` serves the same data as an RTS-style orc camp. Each role has
+a building, and each worker is an orc who leaves it for a job and brings the result back:
+- the planner studies the signpost by the war tent and brings back a scroll
+- coders chop trees beside the lumber camp and carry logs home
+- the tester hammers at the forge's anvil and stores the ingot in the chest
+- the reviewer shoots at the target by the watchtower
+- the integrator loads crates at the stables and hauls them out along the south road
+
+Failures play a hit animation. Banners show the number of jobs waiting. Click an orc for its
+task and live output, or Cancel to stop its task. Drag to pan and scroll to zoom. The art is
+third-party; see [CREDITS.md](CREDITS.md). To rebuild it after changing `art/`, run
+`python3 script/build_warcamp_assets.py` (needs Pillow and NumPy).
 
 ## Embedding
 

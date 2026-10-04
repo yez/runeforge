@@ -1,0 +1,405 @@
+{
+ "orcs": {
+  "regular": {
+   "src": "orc_regular.webp",
+   "fw": 100,
+   "fh": 91,
+   "ax": 47,
+   "ay": 75,
+   "anims": {
+    "stance": [
+     0,
+     4
+    ],
+    "run": [
+     4,
+     8
+    ],
+    "swing": [
+     12,
+     4
+    ],
+    "hit": [
+     16,
+     2
+    ],
+    "cast": [
+     18,
+     4
+    ],
+    "shoot": [
+     22,
+     4
+    ]
+   }
+  },
+  "elite": {
+   "src": "orc_elite.webp",
+   "fw": 121,
+   "fh": 109,
+   "ax": 61,
+   "ay": 85,
+   "anims": {
+    "stance": [
+     0,
+     4
+    ],
+    "run": [
+     4,
+     8
+    ],
+    "swing": [
+     12,
+     4
+    ],
+    "hit": [
+     16,
+     2
+    ],
+    "cast": [
+     18,
+     4
+    ],
+    "shoot": [
+     22,
+     4
+    ]
+   }
+  },
+  "heavy": {
+   "src": "orc_heavy.webp",
+   "fw": 98,
+   "fh": 91,
+   "ax": 47,
+   "ay": 75,
+   "anims": {
+    "stance": [
+     0,
+     4
+    ],
+    "run": [
+     4,
+     8
+    ],
+    "swing": [
+     12,
+     4
+    ],
+    "hit": [
+     16,
+     2
+    ],
+    "cast": [
+     18,
+     4
+    ],
+    "shoot": [
+     22,
+     4
+    ]
+   }
+  },
+  "archer": {
+   "src": "orc_archer.webp",
+   "fw": 85,
+   "fh": 86,
+   "ax": 41,
+   "ay": 74,
+   "anims": {
+    "stance": [
+     0,
+     4
+    ],
+    "run": [
+     4,
+     8
+    ],
+    "swing": [
+     12,
+     4
+    ],
+    "hit": [
+     16,
+     2
+    ],
+    "cast": [
+     18,
+     4
+    ],
+    "shoot": [
+     22,
+     4
+    ]
+   }
+  }
+ },
+ "props": {
+  "bonfire": {
+   "src": "prop_bonfire.webp",
+   "w": 49,
+   "h": 48,
+   "ax": 24,
+   "ay": 36
+  },
+  "anvil": {
+   "src": "prop_anvil.webp",
+   "w": 47,
+   "h": 45,
+   "ax": 23,
+   "ay": 36
+  },
+  "woodpile_a": {
+   "src": "prop_woodpile_a.webp",
+   "w": 43,
+   "h": 32,
+   "ax": 21,
+   "ay": 24
+  },
+  "woodpile_b": {
+   "src": "prop_woodpile_b.webp",
+   "w": 44,
+   "h": 34,
+   "ax": 22,
+   "ay": 25
+  },
+  "crate_a": {
+   "src": "prop_crate_a.webp",
+   "w": 49,
+   "h": 40,
+   "ax": 24,
+   "ay": 31
+  },
+  "crate_b": {
+   "src": "prop_crate_b.webp",
+   "w": 46,
+   "h": 38,
+   "ax": 23,
+   "ay": 29
+  },
+  "chest": {
+   "src": "prop_chest.webp",
+   "w": 45,
+   "h": 35,
+   "ax": 22,
+   "ay": 27
+  },
+  "signpost": {
+   "src": "prop_signpost.webp",
+   "w": 54,
+   "h": 81,
+   "ax": 27,
+   "ay": 71
+  },
+  "stump": {
+   "src": "prop_stump.webp",
+   "w": 44,
+   "h": 43,
+   "ax": 22,
+   "ay": 32
+  },
+  "rock_a": {
+   "src": "prop_rock_a.webp",
+   "w": 43,
+   "h": 30,
+   "ax": 21,
+   "ay": 22
+  },
+  "rock_b": {
+   "src": "prop_rock_b.webp",
+   "w": 36,
+   "h": 31,
+   "ax": 18,
+   "ay": 23
+  },
+  "bush_a": {
+   "src": "prop_bush_a.webp",
+   "w": 45,
+   "h": 36,
+   "ax": 22,
+   "ay": 28
+  },
+  "bush_b": {
+   "src": "prop_bush_b.webp",
+   "w": 55,
+   "h": 32,
+   "ax": 27,
+   "ay": 25
+  },
+  "bush_c": {
+   "src": "prop_bush_c.webp",
+   "w": 53,
+   "h": 35,
+   "ax": 26,
+   "ay": 28
+  },
+  "bush_d": {
+   "src": "prop_bush_d.webp",
+   "w": 50,
+   "h": 39,
+   "ax": 25,
+   "ay": 31
+  },
+  "bush_e": {
+   "src": "prop_bush_e.webp",
+   "w": 43,
+   "h": 34,
+   "ax": 21,
+   "ay": 27
+  },
+  "bush_f": {
+   "src": "prop_bush_f.webp",
+   "w": 51,
+   "h": 38,
+   "ax": 25,
+   "ay": 30
+  },
+  "tuft_a": {
+   "src": "prop_tuft_a.webp",
+   "w": 48,
+   "h": 40,
+   "ax": 24,
+   "ay": 34
+  },
+  "tuft_b": {
+   "src": "prop_tuft_b.webp",
+   "w": 47,
+   "h": 44,
+   "ax": 23,
+   "ay": 37
+  },
+  "pine_a": {
+   "src": "prop_pine_a.webp",
+   "w": 119,
+   "h": 184,
+   "ax": 59,
+   "ay": 171
+  },
+  "pine_b": {
+   "src": "prop_pine_b.webp",
+   "w": 120,
+   "h": 187,
+   "ax": 60,
+   "ay": 173
+  },
+  "pine_c": {
+   "src": "prop_pine_c.webp",
+   "w": 117,
+   "h": 176,
+   "ax": 58,
+   "ay": 163
+  },
+  "pine_d": {
+   "src": "prop_pine_d.webp",
+   "w": 120,
+   "h": 180,
+   "ax": 60,
+   "ay": 167
+  },
+  "oak_a": {
+   "src": "prop_oak_a.webp",
+   "w": 122,
+   "h": 148,
+   "ax": 61,
+   "ay": 137
+  },
+  "oak_b": {
+   "src": "prop_oak_b.webp",
+   "w": 123,
+   "h": 130,
+   "ax": 61,
+   "ay": 120
+  },
+  "oak_c": {
+   "src": "prop_oak_c.webp",
+   "w": 112,
+   "h": 140,
+   "ax": 56,
+   "ay": 130
+  },
+  "oak_d": {
+   "src": "prop_oak_d.webp",
+   "w": 118,
+   "h": 140,
+   "ax": 59,
+   "ay": 130
+  },
+  "dead_a": {
+   "src": "prop_dead_a.webp",
+   "w": 93,
+   "h": 200,
+   "ax": 46,
+   "ay": 190
+  },
+  "dead_b": {
+   "src": "prop_dead_b.webp",
+   "w": 112,
+   "h": 195,
+   "ax": 56,
+   "ay": 185
+  },
+  "dead_c": {
+   "src": "prop_dead_c.webp",
+   "w": 102,
+   "h": 187,
+   "ax": 51,
+   "ay": 177
+  },
+  "tent_a": {
+   "src": "prop_tent_a.webp",
+   "w": 91,
+   "h": 74,
+   "ax": 45,
+   "ay": 62
+  },
+  "tent_b": {
+   "src": "prop_tent_b.webp",
+   "w": 93,
+   "h": 80,
+   "ax": 46,
+   "ay": 68
+  },
+  "ground": {
+   "grass": "ground_grass.webp",
+   "path": "ground_path.webp",
+   "tw": 64,
+   "th": 32,
+   "count": 16
+  }
+ },
+ "buildings": {
+  "great_hall": {
+   "src": "building_great_hall.webp",
+   "w": 227,
+   "h": 304,
+   "ax": 113,
+   "ay": 273
+  },
+  "watchtower": {
+   "src": "building_watchtower.webp",
+   "w": 183,
+   "h": 271,
+   "ax": 91,
+   "ay": 243
+  },
+  "forge": {
+   "src": "building_forge.webp",
+   "w": 289,
+   "h": 245,
+   "ax": 144,
+   "ay": 196
+  },
+  "stable": {
+   "src": "building_stable.webp",
+   "w": 302,
+   "h": 239,
+   "ax": 151,
+   "ay": 186
+  }
+ },
+ "ui": {
+  "card-bg": "ui_card-bg.webp",
+  "dropdown-menu-bg": "ui_dropdown-menu-bg.webp",
+  "button-bg-sm": "ui_button-bg-sm.webp",
+  "button-orc": "ui_button-orc.webp"
+ }
+}
