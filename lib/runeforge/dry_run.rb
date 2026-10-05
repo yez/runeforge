@@ -175,10 +175,11 @@ module Runeforge
     class Integrator < Role
       def call
         number = @rng.rand(100..999)
+        merging = !env.config["manual_merge"]
         work([
                "Pushing #{short(msg.commit_sha)} to #{task[:branch]}",
-               "Looking for an open pull request",
                "Opening pull request ##{number}",
+               merging ? "Merging pull request ##{number} into main" : "Leaving pull request ##{number} for review",
                "Done"
              ])
         if fails?(0.1)
@@ -186,8 +187,10 @@ module Runeforge
         end
 
         url = "dry-run://pull/#{number}"
-        result("integrate.done", { "pr_url" => url, "branch" => task[:branch], "warnings" => [] },
-               commit_sha: msg.commit_sha, task_updates: { external_pr_url: url })
+        merged = merging ? fake_sha : nil
+        result("integrate.done", { "pr_url" => url, "branch" => task[:branch], "base" => "main", "merged" => !merged.nil?,
+                                   "merged_sha" => merged, "warnings" => [] },
+               commit_sha: msg.commit_sha, task_updates: { external_pr_url: url, merged_sha: merged })
       end
     end
 

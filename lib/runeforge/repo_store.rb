@@ -3,6 +3,9 @@
 module Runeforge
   # Host-owned bare clones. Agents never see these; they get exported copies.
   class RepoStore
+    # A merge Runeforge won't make by itself: conflicts, or a checkout with uncommitted changes.
+    class MergeBlocked < Error; end
+
     NAME_FORMAT = /\A[A-Za-z0-9][A-Za-z0-9._-]{0,99}\z/
 
     def initialize(db, root)
@@ -63,11 +66,74 @@ module Runeforge
       Git.run("push", "--quiet", "origin", "+#{sha}:refs/heads/#{branch}", dir: path(name))
     end
 
+    # Merges `sha` into the base branch on origin, for remotes without pull requests (local
+    # directories, plain git servers). Fast-forwards when it can; otherwise builds the merge commit
+    # here in the host clone, never touching a checkout, and gives up on conflicts. If origin is a
+    # local repository with the base branch checked out, that checkout is fast-forwarded, but only
+    # when it has no uncommitted changes. Returns the new tip of the base branch.
+    def merge(name, sha:, message:, identity: {})
+      repo = fetch(name)
+      dir = path(name)
+      Git.run("fetch", "--quiet", "--prune", "origin", dir:)
+      tip = base_sha(name)
+      return tip if ancestor?(dir, sha, tip) # already in the base branch
+
+      result =
+        if ancestor?(dir, tip, sha)
+          sha
+        else
+          tree = Git.run("merge-tree", "--write-tree", tip, sha, dir:, allow_failure: true)
+          raise MergeBlocked, "it conflicts with #{repo[:base_branch]}" unless tree
+
+          Git.run("commit-tree", tree.lines.first.strip, "-p", tip, "-p", sha, "-m", message, dir:, env: identity).strip
+        end
+      deliver(repo, result)
+      result
+    end
+
+    # Deletes a branch on origin and in the host clone, after its work was merged.
+    def delete_branch(name, branch)
+      Git.run("push", "--quiet", "origin", "--delete", branch, dir: path(name), allow_failure: true)
+      Git.run("update-ref", "-d", "refs/heads/#{branch}", dir: path(name), allow_failure: true)
+    end
+
     def changed_files(name, from:, to:)
       Git.run("diff", "--name-only", "--no-renames", "-z", from, to, dir: path(name)).split("\0")
     end
 
     private
+
+    def ancestor?(dir, older, newer)
+      !Git.run("merge-base", "--is-ancestor", older, newer, dir:, allow_failure: true).nil?
+    end
+
+    # Moves origin's base branch to `sha` without forcing. A non-bare local repository refuses a
+    # push to its checked-out branch; then fast-forward that checkout instead.
+    def deliver(repo, sha)
+      branch = repo[:base_branch]
+      Git.run("push", "--quiet", "origin", "#{sha}:refs/heads/#{branch}", dir: path(repo[:name]))
+    rescue Git::CommandFailed => e
+      raise unless e.message.include?("checked out") && File.directory?(repo[:url].to_s)
+
+      fast_forward_checkout(repo, sha)
+    end
+
+    def fast_forward_checkout(repo, sha)
+      work = repo[:url]
+      branch = repo[:base_branch]
+      unless Git.run("status", "--porcelain", "--untracked-files=no", dir: work).strip.empty?
+        raise MergeBlocked, "#{work} has uncommitted changes on #{branch}"
+      end
+
+      Git.run("push", "--quiet", "--force", "origin", "#{sha}:refs/runeforge/merge", dir: path(repo[:name]))
+      begin
+        Git.run("merge", "--ff-only", "--quiet", "refs/runeforge/merge", dir: work)
+      rescue Git::CommandFailed => e
+        raise MergeBlocked, "could not fast-forward #{branch} in #{work}: #{e.message}"
+      ensure
+        Git.run("update-ref", "-d", "refs/runeforge/merge", dir: work, allow_failure: true)
+      end
+    end
 
     def ensure_clone(name, url)
       return if File.directory?(path(name))

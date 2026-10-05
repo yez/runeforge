@@ -10,7 +10,7 @@ module Runeforge
     ARRAY_LIMIT = 50
     # Task columns a viewer needs to draw progress.
     TASK_FIELDS = %i[id status title repo lane attempts max_attempts tokens_used cost_cents head_sha error
-                     external_pr_url updated_at].freeze
+                     external_pr_url merged_sha updated_at].freeze
 
     module_function
 

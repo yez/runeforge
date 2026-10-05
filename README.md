@@ -1,10 +1,10 @@
 # Runeforge
 
-Runeforge turns tickets into reviewed pull requests by running coding-agent CLIs (Claude Code,
+Runeforge turns tickets into tested, merged changes by running coding-agent CLIs (Claude Code,
 Codex, Aider) through a fixed workflow:
 
 ```
-task → plan (spec + acceptance tests) → code → test → locked-test check → branch (and a PR for GitHub remotes)
+task → plan (spec + acceptance tests) → code → test → locked-test check → branch, PR, merge
 ```
 
 It is an addition to the coding-agent ecosystem, not a replacement: the agent CLIs do the
@@ -16,6 +16,10 @@ using your own database and git.
   supervisor that applies the workflow.
 - **Git as the ledger.** Each task gets a branch (`runeforge/<task>`); each attempt is one
   commit with `Agent-Task` / `Agent-Message` trailers linking it back to the database.
+- **Merged by default.** A task that passes its tests and the locked-test check is merged into
+  the base branch: through its pull request on GitHub, directly for other remotes and local
+  repositories. The next task starts from the merged result. Set `manual_merge: true` to leave
+  branches and pull requests for a person to merge instead (see [Merging](#merging)).
 - **Isolation.** Agent CLIs and test suites run in a throwaway container with no git, GitHub,
   JIRA or database credentials. The host turns the agent's patch into a commit itself.
 - **Liveness.** Claims are leased and heartbeated. Stalled work is requeued, and dead-lettered
@@ -32,12 +36,18 @@ runeforge plan.md -d ~/code/my-app                              # iterate on an 
 - A single word that isn't a command or a file is refused as a likely typo; use
   `runeforge build WORD` to build from a one-word prompt.
 - **Without `-d`/`--dir`**, Runeforge asks for a directory name, creates it as a new git
-  repository, builds there and leaves it checked out on the `runeforge/<name>` branch.
-- **With `-d DIR`**, it works on a new `runeforge/<name>` branch in that repository and leaves
-  your checkout alone. It refuses to start if `DIR` has uncommitted changes. A directory that
-  isn't a git repository yet can be initialised on the spot.
+  repository, builds there and merges each step into `main`.
+- **With `-d DIR`**, it works on `runeforge/<name>` branches in that repository and merges them
+  into the branch you had checked out. Your checkout is fast-forwarded to match, as long as you
+  haven't left uncommitted changes in it; otherwise the work stays on its branch. It refuses to
+  start if `DIR` has uncommitted changes. A directory that isn't a git repository yet can be
+  initialised on the spot.
+- **With `manual_merge: true`**, nothing is merged: the whole run builds on one
+  `runeforge/<name>` branch, a new project is left checked out on it, and `-d` leaves your
+  checkout alone.
 - **Task lists:** each unchecked top-level list item (`- item`, `- [ ] item`, `1. item`) is one
-  step, built in order on the same branch; indented lines belong to the item above, checked
+  step, built in order, each on its own branch merged before the next starts (on one shared
+  branch with `manual_merge: true`); indented lines belong to the item above, checked
   items (`- [x]`) are skipped, and the rest of the file is passed along as context. A file
   without at least two list items, or a prompt, is one step. A failed step stops the run.
 - **Each step:** the planner writes a spec, acceptance tests (which become locked) and any
@@ -48,7 +58,7 @@ runeforge plan.md -d ~/code/my-app                              # iterate on an 
   Runeforge asks which apt packages to add and builds a per-project image on top of it. With
   `sandbox.mode: none` it asks you to install the tool yourself instead.
 - It runs in the foreground and prints each step as it happens. Ctrl-C stops it and discards
-  the step in progress; finished steps stay on the branch.
+  the step in progress; finished steps stay merged (or on the branch, with `manual_merge`).
 
 Configuration and data live in `~/.runeforge/` (`runeforge.yml`, the SQLite database, clones,
 logs), unless there is a `runeforge.yml` in the current directory or you pass `-c`. `-db URL`
@@ -126,7 +136,7 @@ never judges its own work and never runs next to your credentials.
 | **Coder** | Yes | Changes the code until the locked tests and the rest of the suite pass, using feedback from failed attempts. A patch that touches a locked test file is rejected | Sandbox | Yes, except locked tests |
 | **Tester** | No | Runs the setup and test commands against the coder's commit in a fresh sandbox; the exit code is the verdict. Never writes files | Sandbox | No |
 | **Reviewer** | No | Confirms every locked test file is byte-for-byte what the planner committed (by git object id) and that the change stays within size limits | Host | No |
-| **Integrator** | No | Pushes the branch and, for GitHub remotes, opens or reuses the pull request and comments on the JIRA ticket, using credentials that only exist on the host | Host | No |
+| **Integrator** | No | Pushes the branch, opens or reuses the pull request on GitHub, comments on the JIRA ticket, and merges (unless `manual_merge`), using credentials that only exist on the host | Host | No |
 
 A failed test run or rejected check goes back to the coder with the failure output, until the
 task runs out of attempts or budget.
@@ -146,7 +156,7 @@ task runs out of attempts or budget.
 The planner's patch must include at least one test file (matching `test_globs`); those test
 files become locked, while any scaffolding it adds does not. The coder's patch is rejected if it
 touches a locked file, and the reviewer re-checks every locked file's git object id before the
-branch is updated.
+branch is pushed and merged.
 
 ## Live dashboard
 
@@ -192,6 +202,24 @@ task and live output, or Cancel to stop its task. Drag to pan and scroll to zoom
 third-party; see [CREDITS.md](CREDITS.md). To rebuild it after changing `art/`, run
 `python3 script/build_warcamp_assets.py` (needs Pillow and NumPy).
 
+## Merging
+
+By default every task is merged once it passes:
+
+- **GitHub remotes:** the integrator opens the pull request, then merges it through the API
+  with `merge_method` (`merge`, `squash` or `rebase`; default `merge`). Branch protection still
+  applies: if GitHub refuses (required reviews or checks, conflicts), the pull request is left
+  open and the task finishes with a "not merged" warning.
+- **Other remotes and local repositories:** there is no pull request, so the branch is merged
+  directly: a fast-forward when nothing else landed, otherwise a merge commit built in
+  Runeforge's own clone. Conflicts are never resolved automatically; the branch is left for you.
+  If the base branch is checked out in a local repository, that checkout is fast-forwarded only
+  when it has no uncommitted changes. Merged branches are deleted.
+
+A task that wasn't merged is still `done`; `runeforge status TASK` shows the warning and its
+`merged_sha` stays empty. With `manual_merge: true` in `runeforge.yml`, Runeforge stops after
+pushing the branch and opening the pull request, as it used to.
+
 ## Embedding
 
 The supervisor and workers can run inside an app's job system:
@@ -224,4 +252,4 @@ Container isolation specs run only when a Docker daemon is available.
 - Restricting container egress to the LLM API and package registries is left to the Docker
   network you configure (`sandbox.network`); Runeforge doesn't filter traffic itself.
 - The LLM key is passed into the container by name. A proxy that keeps it out entirely is planned.
-- Parallel best-of-N attempts, `LISTEN/NOTIFY`, OpenTelemetry and a web dashboard are not built yet.
+- Parallel best-of-N attempts and OpenTelemetry are not built yet.

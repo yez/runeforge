@@ -27,6 +27,9 @@ agent:
   model: null
   key_env: RUNEFORGE_LLM_API_KEY       # host variable with a separate, spend-limited key
 
+manual_merge: false                    # true: leave branches and pull requests for a person to merge
+merge_method: merge                    # GitHub only: merge | squash | rebase
+
 dry_run:
   enabled: false                       # true: agents sleep through canned steps instead of calling an LLM
   min_seconds: 5

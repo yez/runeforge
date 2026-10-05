@@ -77,6 +77,11 @@ module Runeforge
         "default_repo" => nil
       },
       "workflow_paths" => [],
+      # Each finished task is merged into the repository's base branch: through the pull request
+      # on GitHub (merge_method: merge, squash or rebase), directly for other remotes. true leaves
+      # branches and pull requests for a person to merge.
+      "manual_merge" => false,
+      "merge_method" => "merge",
       # Agents that go through the motions (sleeps and canned output) without calling an LLM,
       # git or the network. See Runeforge::DryRun.
       "dry_run" => {

@@ -64,9 +64,10 @@ RSpec.describe Runeforge::Build do
       SH
     end
 
-    def build_env_for(tools: "[]")
+    def build_env_for(tools: "[]", manual_merge: false)
       agent = fake_agent(plan: "TOOLS='#{tools}'\n#{plan_script}", code: code_script)
-      build_env("agent" => { "command" => "sh #{agent}" }).tap { |env| env.github = Helpers::FakeGitHub.new(opens_prs: false) }
+      build_env("agent" => { "command" => "sh #{agent}" }, "manual_merge" => manual_merge)
+        .tap { |env| env.github = Helpers::FakeGitHub.new(opens_prs: false) }
     end
 
     def run_build(env, input, dir: nil, answers: "")
@@ -85,8 +86,73 @@ RSpec.describe Runeforge::Build do
       dir
     end
 
-    it "asks for a directory, creates the project and leaves it on the new branch" do
+    it "asks for a directory, creates the project and merges the work into main" do
       env = build_env_for
+      target = File.join(tmpdir, "greeter")
+      expect(run_build(env, "Add a greeting", answers: "#{target}\n")).to be(true)
+
+      expect(out.string).to include("✓ merged into main", "Done. The work is merged into main")
+      expect(git(target, "branch", "--show-current").strip).to eq("main")
+      expect(git(target, "status", "--porcelain")).to be_empty
+      expect(File.read(File.join(target, "lib", "greeting.txt"))).to eq("greeting\n")
+      expect(git(target, "branch", "--list", "runeforge/*")).to be_empty
+      expect(env.tasks.list.first[:merged_sha]).to eq(git(target, "rev-parse", "main").strip)
+    end
+
+    it "gives each step its own branch, merged before the next step starts" do
+      env = build_env_for
+      plan = File.join(tmpdir, "plan.md")
+      File.write(plan, "# Greeter\n\n- Add a greeting\n- Add a farewell\n")
+      target = File.join(tmpdir, "greeter")
+      expect(run_build(env, plan, answers: "#{target}\n")).to be(true)
+
+      tasks = env.tasks.list.sort_by { |task| task[:id] }
+      expect(tasks.map { |task| task[:branch] }).to eq(%w[runeforge/greeter-s1 runeforge/greeter-s2])
+      expect(tasks.last[:base_sha]).to eq(tasks.first[:merged_sha])
+      expect(Dir.children(File.join(target, "lib")).sort).to eq(%w[farewell.txt greeting.txt])
+      expect(git(target, "log", "--format=%s", "main").lines.map(&:strip)).to include("runeforge: plan for #{tasks.last[:id]}")
+      expect(git(target, "branch", "--list", "runeforge/*")).to be_empty
+    end
+
+    it "fast-forwards main in --dir when it's checked out and clean" do
+      env = build_env_for
+      dir = make_project
+      expect(run_build(env, "Add a greeting", dir:)).to be(true)
+
+      expect(git(dir, "branch", "--show-current").strip).to eq("main")
+      expect(git(dir, "status", "--porcelain")).to be_empty
+      expect(File.read(File.join(dir, "lib", "greeting.txt"))).to eq("greeting\n")
+    end
+
+    it "merges into whichever branch was checked out when the build started" do
+      env = build_env_for
+      dir = make_project
+      git(dir, "switch", "-q", "-c", "feature")
+      expect(run_build(env, "Add a greeting", dir:)).to be(true)
+
+      expect(out.string).to include("✓ merged into feature")
+      expect(git(dir, "show", "feature:lib/greeting.txt")).to eq("greeting\n")
+      expect(git(dir, "rev-parse", "main").strip).not_to eq(git(dir, "rev-parse", "feature").strip)
+    end
+
+    it "leaves the branch when the checkout has uncommitted changes by merge time" do
+      env = build_env_for
+      dir = make_project
+      original = env.repos.method(:merge)
+      allow(env.repos).to receive(:merge) do |*args, **kwargs|
+        File.write(File.join(dir, "README.md"), "edited meanwhile\n")
+        original.call(*args, **kwargs)
+      end
+      expect(run_build(env, "Add a greeting", dir:)).to be(true)
+
+      expect(out.string).to include("! not merged into main: #{dir} has uncommitted changes on main",
+                                    "Done, but not everything was merged", "runeforge/add-a-greeting")
+      expect(git(dir, "log", "--format=%s", "main..runeforge/add-a-greeting").lines.size).to eq(2)
+      expect(env.tasks.list.first[:merged_sha]).to be_nil
+    end
+
+    it "with manual_merge, creates the project and leaves it on the new branch" do
+      env = build_env_for(manual_merge: true)
       target = File.join(tmpdir, "greeter")
       expect(run_build(env, "Add a greeting", answers: "#{target}\n")).to be(true)
 
@@ -98,8 +164,8 @@ RSpec.describe Runeforge::Build do
       expect(repo[:test_command]).to eq("for t in test/*_test.sh; do sh $t || exit 1; done")
     end
 
-    it "builds each unchecked task-list item in order on one branch" do
-      env = build_env_for
+    it "with manual_merge, builds each unchecked task-list item in order on one branch" do
+      env = build_env_for(manual_merge: true)
       plan = File.join(tmpdir, "plan.md")
       File.write(plan, "# Greeter\n\n- [x] Already done\n- Add a greeting\n- Add a farewell\n")
       target = File.join(tmpdir, "greeter")
@@ -112,8 +178,8 @@ RSpec.describe Runeforge::Build do
       expect(JSON.parse(last[:locked_paths]).keys).to contain_exactly("test/greeting_test.sh", "test/farewell_test.sh")
     end
 
-    it "works on a new branch in --dir and leaves the checkout alone" do
-      env = build_env_for
+    it "with manual_merge, works on a new branch in --dir and leaves the checkout alone" do
+      env = build_env_for(manual_merge: true)
       dir = make_project
       expect(run_build(env, "Add a greeting", dir:)).to be(true)
 
@@ -123,8 +189,8 @@ RSpec.describe Runeforge::Build do
       expect(out.string).to include("Your checkout is unchanged", "git -C #{dir} switch runeforge/add-a-greeting")
     end
 
-    it "picks a fresh branch name when the previous one exists" do
-      env = build_env_for
+    it "with manual_merge, picks a fresh branch name when the previous one exists" do
+      env = build_env_for(manual_merge: true)
       dir = make_project
       run_build(env, "Add a greeting", dir:)
       run_build(env, "Add a greeting", dir:)
@@ -150,7 +216,8 @@ RSpec.describe Runeforge::Build do
 
       expect { run_build(env, "Add a greeting", dir:, answers: "n\n") }.to raise_error(Runeforge::Error, /needs a git repository/)
       expect(run_build(env, "Add a greeting", dir:, answers: "y\n")).to be(true)
-      expect(git(dir, "log", "--format=%s", "main").lines.map(&:strip)).to eq(["Initial commit"])
+      expect(git(dir, "log", "--format=%s", "main").lines.map(&:strip).last).to eq("Initial commit")
+      expect(File.read(File.join(dir, "lib", "greeting.txt"))).to eq("greeting\n")
     end
 
     it "asks for missing tools and stops if the person declines" do

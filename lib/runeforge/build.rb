@@ -64,7 +64,7 @@ module Runeforge
     def run
       directory, created = resolve_directory
       Setup.new(config_path: Config::DEFAULT_PATH, out: @out).prepare(@env)
-      repo = register(directory)
+      repo = @registered = register(directory)
       branch = unique_branch(directory, repo)
       @out.puts "\nBuilding \"#{@input.title}\" in #{directory} on branch #{branch} (#{plural(@input.steps.size, 'step')})"
 
@@ -176,10 +176,13 @@ module Runeforge
       @operator = Operator.new(@env, input: @stdin, output: @out)
       @lane = lane
 
+      @unmerged = []
       @input.steps.each_with_index do |step, index|
         multi = @input.steps.size > 1
+        # Merging: each step gets its own branch off the base it starts from. Manual: one branch.
+        step_branch = merging? && multi ? "#{branch}-s#{index + 1}" : branch
         task = @env.tasks.create(
-          id: multi ? "#{run_id}-s#{index + 1}" : run_id, workflow: "build", repo:, base_sha: base, branch:, lane:,
+          id: multi ? "#{run_id}-s#{index + 1}" : run_id, workflow: "build", repo:, base_sha: base, branch: step_branch, lane:,
           locked_paths: locked, title: step.title, mailbox: @env.mailbox("cli"),
           input: { "title" => step.title, "description" => step.body,
                    "context" => (multi ? @input.text : nil), "step" => "#{index + 1} of #{@input.steps.size}" }.compact,
@@ -190,7 +193,13 @@ module Runeforge
         finished = drive(task[:id])
         return false unless finished[:status] == "done"
 
-        base = finished[:head_sha]
+        # The next step starts from the merged base, or stacks on this step if it wasn't merged.
+        if finished[:merged_sha]
+          base = @env.repos.refresh(repo)
+        else
+          base = finished[:head_sha]
+          @unmerged << step_branch
+        end
         locked = JSON.parse(finished[:locked_paths] || "{}")
       end
       true
@@ -253,15 +262,27 @@ module Runeforge
       when "test.result" then payload["passed"] ? "✓ tests passed" : "✗ #{payload['reason'] || 'tests failed'}"
       when "review.request" then "· checking locked tests"
       when "review.verdict" then payload["approved"] ? "✓ locked tests untouched" : "✗ #{Array(payload['reasons']).join('; ')}"
-      when "integrate.request" then "· updating the branch"
-      when "integrate.done" then "✓ branch #{payload['branch']} updated#{payload['pr_url'] ? " (#{payload['pr_url']})" : ''}"
+      when "integrate.request" then merging? ? "· merging" : "· updating the branch"
+      when "integrate.done"
+        line = payload["merged"] ? "✓ merged into #{payload['base']}" : "✓ branch #{payload['branch']} updated"
+        line += " (#{payload['pr_url']})" if payload["pr_url"]
+        [line, *Array(payload["warnings"]).map { |warning| "  ! #{warning}" }].join("\n  ")
       when "integrate.failed" then "✗ could not update the branch: #{payload['reason']}"
       end
     end
 
     def report(directory, branch, created, finished)
       task = @env.tasks.find(@current) if @current
-      if finished
+      if finished && merging?
+        base = @env.repos.fetch(@registered)[:base_branch]
+        if @unmerged.empty?
+          @out.puts "\nDone. The work is merged into #{base} in #{directory}:"
+          @out.puts "  git -C #{directory} log --oneline --first-parent -#{@input.steps.size} #{base}"
+        else
+          @out.puts "\nDone, but not everything was merged; see the warnings above. Unmerged work is on:"
+          @unmerged.each { |b| @out.puts "  #{b}" }
+        end
+      elsif finished
         if created
           git("switch", "-q", branch, dir: directory)
           @out.puts "\nDone. #{directory} is on branch #{branch}."
@@ -288,6 +309,8 @@ module Runeforge
     end
 
     def git(*args, dir:, env: {}) = Git.run(*args, dir:, env:)
+
+    def merging? = !@env.config["manual_merge"]
 
     def plural(count, word) = "#{count} #{word}#{'s' unless count == 1}"
   end

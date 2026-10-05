@@ -4,8 +4,9 @@ RSpec.describe "Ticket to pull request" do
   on_each_backend do
     let(:origin) { make_origin }
 
-    def env_with(code:, plan: Helpers::PLAN_GREETING, max_attempts: 5)
-      build_env("agent" => { "command" => "sh #{fake_agent(plan:, code:)}" }, "budgets" => { "max_attempts" => max_attempts })
+    def env_with(code:, plan: Helpers::PLAN_GREETING, max_attempts: 5, manual_merge: false)
+      build_env("agent" => { "command" => "sh #{fake_agent(plan:, code:)}" }, "budgets" => { "max_attempts" => max_attempts },
+                "manual_merge" => manual_merge)
         .tap { |env| add_repo(env, url: origin) }
     end
 
@@ -13,8 +14,60 @@ RSpec.describe "Ticket to pull request" do
 
     def git(*args) = sh!("git", *args, dir: origin)
 
-    it "plans, codes, tests, then pushes the branch and opens a PR" do
+    it "plans, codes, tests, then merges the work into the base branch" do
       env = env_with(code: Helpers::CODE_GREETING)
+      create(env)
+      task = drive(env, "T-1", until_status: "done")
+
+      expect(task[:merged_sha]).to eq(git("rev-parse", "main").strip)
+      expect(git("show", "main:lib/greeting.txt")).to eq("Hello, Runeforge\n")
+      # Nothing else landed on main meanwhile, so it's a fast-forward and the trailers survive.
+      expect(task[:merged_sha]).to eq(task[:head_sha])
+      expect(git("log", "-1", "--format=%B", "main")).to include("Agent-Task: T-1")
+      expect(git("branch", "--list", "runeforge/*")).to be_empty
+      done = env.tasks.messages("T-1").find { |msg| msg.type == "integrate.done" }
+      expect(done.payload).to include("merged" => true, "base" => "main", "warnings" => [])
+    end
+
+    # Someone else commits to main after the task was created.
+    def push_from_elsewhere(path, body, message)
+      clone = File.join(tmpdir, "other")
+      sh!("git", "clone", "-q", origin, clone, dir: tmpdir) unless File.directory?(clone)
+      FileUtils.mkdir_p(File.dirname(File.join(clone, path)))
+      File.write(File.join(clone, path), body)
+      sh!("git", "add", "-A", dir: clone)
+      sh!("git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-qm", message, dir: clone)
+      sh!("git", "push", "-q", "origin", "main", dir: clone)
+      sh!("git", "rev-parse", "HEAD", dir: clone).strip
+    end
+
+    it "makes a merge commit when the base branch moved on" do
+      env = env_with(code: Helpers::CODE_GREETING)
+      create(env)
+      other = push_from_elsewhere("NOTES.md", "meanwhile\n", "meanwhile")
+      task = drive(env, "T-1", until_status: "done")
+
+      expect(git("rev-parse", "main").strip).to eq(task[:merged_sha])
+      expect(git("log", "-1", "--format=%P", "main").split).to contain_exactly(task[:head_sha], other)
+      expect(git("log", "-1", "--format=%B", "main")).to start_with("Merge runeforge/T-1: Greet").and include("Agent-Task: T-1")
+      expect(git("show", "main:NOTES.md")).to eq("meanwhile\n")
+    end
+
+    it "leaves a conflicting branch for a person, and still finishes the task" do
+      env = env_with(code: Helpers::CODE_GREETING)
+      create(env)
+      push_from_elsewhere("lib/greeting.txt", "Howdy\n", "howdy")
+      task = drive(env, "T-1", until_status: "done")
+
+      expect(task[:merged_sha]).to be_nil
+      warning = env.tasks.messages("T-1").find { |msg| msg.type == "integrate.done" }.payload["warnings"].first
+      expect(warning).to include("not merged into main: it conflicts with main", "the work is on runeforge/T-1")
+      expect(git("show", "main:lib/greeting.txt")).to eq("Howdy\n")
+      expect(git("rev-parse", "runeforge/T-1").strip).to eq(task[:head_sha])
+    end
+
+    it "with manual_merge, pushes the branch and opens a PR without merging" do
+      env = env_with(code: Helpers::CODE_GREETING, manual_merge: true)
       create(env)
       task = drive(env, "T-1", until_status: "done")
 
