@@ -56,6 +56,21 @@ RSpec.describe Runeforge::Events do
       expect(kinds(cursor)).to be_empty
     end
 
+    it "records payloads holding raw bytes, however long, as UTF-8" do
+      # A planner's spec read as bytes once blocked tasks: shortening it with "…" raised
+      # Encoding::CompatibilityError.
+      spec = "## Emoji shower 🎉\n#{'x' * 600}".b
+      expect { mailbox.post(task_id: "T-1", type: "plan.done", recipient: "supervisor", payload: { "spec" => spec }) }
+        .not_to output.to_stderr # no "UTF-8 string passed as BINARY" from JSON.generate
+      expect(Runeforge::Message.parse_payload(db[:runeforge_messages].order(:id).last[:payload])["spec"])
+        .to start_with("## Emoji shower 🎉\n")
+
+      clipped = described_class.since(db).last[:data]["payload"]["spec"]
+      expect(clipped).to start_with("## Emoji shower 🎉\n").and end_with("…")
+      expect(clipped.length).to eq(described_class::STRING_LIMIT + 1)
+      expect(described_class.clip("bad \xFF".b)).to eq("bad \uFFFD")
+    end
+
     it "filters by task and prunes by age" do
       described_class.emit(db, "worker.started", actor: "w2")
       expect(described_class.since(db, task_id: "T-1").map { |e| e[:task_id] }.uniq).to eq(["T-1"])

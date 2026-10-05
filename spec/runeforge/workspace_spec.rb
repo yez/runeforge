@@ -9,6 +9,18 @@ RSpec.describe Runeforge::Workspace do
     expect(workspace.read_meta("missing.json", max_bytes: 10)).to be_nil
   end
 
+  it "reads text files as UTF-8 and patches as raw bytes" do
+    workspace.write_meta("spec.md", "Emoji shower 🎉\n")
+    File.binwrite(File.join(workspace.meta_dir, "broken.md"), "ok \xFF\n")
+
+    expect(workspace.read_meta("spec.md", max_bytes: 100).encoding).to eq(Encoding::BINARY)
+    text = workspace.read_meta_text("spec.md", max_bytes: 100)
+    expect(text).to eq("Emoji shower 🎉\n")
+    expect(text.encoding).to eq(Encoding::UTF_8)
+    expect(workspace.read_meta_text("broken.md", max_bytes: 100)).to eq("ok \uFFFD\n")
+    expect(workspace.read_meta_text("missing.md", max_bytes: 100)).to be_nil
+  end
+
   it "refuses to follow a symlink out of the workspace" do
     FileUtils.mkdir_p(workspace.meta_dir)
     File.symlink("/etc/hosts", File.join(workspace.meta_dir, "changes.patch"))

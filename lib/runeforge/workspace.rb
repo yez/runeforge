@@ -45,6 +45,13 @@ module Runeforge
       raise UnsafeFile, "#{META_DIR}/#{name} is a symlink"
     end
 
+    # A text file the sandbox wrote (a spec, a JSON report), as UTF-8. read_meta returns raw bytes,
+    # which is right for patches; text tagged as binary breaks as soon as it meets UTF-8 strings.
+    # Invalid byte sequences become U+FFFD.
+    def read_meta_text(name, max_bytes:)
+      read_meta(name, max_bytes:)&.force_encoding(Encoding::UTF_8)&.scrub
+    end
+
     def cleanup!
       FileUtils.rm_rf(path)
     end

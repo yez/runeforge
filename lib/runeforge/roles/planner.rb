@@ -38,7 +38,7 @@ module Runeforge
         )
         locked = commit.changed_paths.select { |path| test_path?(path) }
                        .to_h { |path| [path, env.repos.oid(task[:repo], commit.sha, path)] }
-        spec = workspace.read_meta("spec.md", max_bytes: limits["max_spec_bytes"]).to_s
+        spec = workspace.read_meta_text("spec.md", max_bytes: limits["max_spec_bytes"]).to_s
         result("plan.done", { "spec" => spec, "locked_paths" => locked, "project" => project, "log_path" => run.log_path },
                commit_sha: commit.sha, task_updates: updates)
       rescue Committer::PatchRejected, Workspace::UnsafeFile => e
@@ -48,7 +48,7 @@ module Runeforge
       # .runeforge/project.json: {"test_command": "...", "setup_command": "...", "tools": ["cargo"]}.
       # Written by the agent, so every field is checked before it is used.
       def read_project(workspace)
-        raw = workspace.read_meta("project.json", max_bytes: 16_384)
+        raw = workspace.read_meta_text("project.json", max_bytes: 16_384)
         data = raw ? JSON.parse(raw) : {}
         return {} unless data.is_a?(Hash)
 

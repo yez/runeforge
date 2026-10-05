@@ -84,6 +84,22 @@ RSpec.describe "Ticket to pull request" do
       expect(task).to include(tokens_used: 240, cost_cents: 2, attempts: 1)
     end
 
+    it "carries a long spec with emoji from the planner to the task" do
+      plan = <<~SH
+        mkdir -p test
+        printf 'grep -q "Hello, Runeforge" lib/greeting.txt\\n' > test/greeting_test.sh
+        { printf '## Greeting 🎉\\n\\nWhen it works, confetti ✨ falls.\\n'; for i in $(seq 1 40); do printf 'Detail line %s.\\n' "$i"; done; } > .runeforge/spec.md
+      SH
+      env = env_with(code: Helpers::CODE_GREETING, plan:)
+      create(env)
+      task = drive(env, "T-1", until_status: "done")
+
+      expect(task[:spec]).to start_with("## Greeting 🎉\n\nWhen it works, confetti ✨ falls.")
+      expect(task[:spec].bytesize).to be > 500
+      plan_done = env.tasks.messages("T-1").find { |msg| msg.type == "plan.done" }
+      expect(plan_done.payload["spec"]).to eq(task[:spec])
+    end
+
     it "keeps installed dependencies and caches out of the coder's patch" do
       code = <<~SH
         #{Helpers::CODE_GREETING}

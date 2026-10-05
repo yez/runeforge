@@ -19,6 +19,7 @@ module Runeforge
 
     # Returns the new message id, or nil when the dedupe key was already used.
     def post(task_id:, type:, recipient:, payload: {}, sender: worker_id, in_reply_to: nil, commit_sha: nil, dedupe_key: nil)
+      payload = Events.to_utf8(payload)
       db.transaction(savepoint: true) do
         row = {
           task_id: task_id.to_s, type: type.to_s, recipient: recipient.to_s, sender: sender.to_s,

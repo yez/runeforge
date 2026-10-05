@@ -79,12 +79,32 @@ module Runeforge
     # Keeps events small: payloads can hold whole specs and test logs.
     def clip(value)
       case value
-      when String then value.length > STRING_LIMIT ? "#{value[0, STRING_LIMIT]}…" : value
+      when String
+        text = utf8(value)
+        text.length > STRING_LIMIT ? "#{text[0, STRING_LIMIT]}…" : text
       when Array then value.first(ARRAY_LIMIT).map { |item| clip(item) }
       when Hash then value.to_h { |key, item| [key.to_s, clip(item)] }
       when Time then value.utc.iso8601
       else value
       end
+    end
+
+    # A payload with every string as valid UTF-8, for storing as JSON (raw bytes only warn in
+    # json 2.x and raise from 3.0).
+    def to_utf8(value)
+      case value
+      when String then utf8(value)
+      when Array then value.map { |item| to_utf8(item) }
+      when Hash then value.to_h { |key, item| [key, to_utf8(item)] }
+      else value
+      end
+    end
+
+    # Strings from agents can arrive as raw bytes; read them as UTF-8, replacing invalid bytes.
+    def utf8(text)
+      return text if text.encoding == Encoding::UTF_8 && text.valid_encoding?
+
+      text.dup.force_encoding(Encoding::UTF_8).scrub
     end
   end
 end
