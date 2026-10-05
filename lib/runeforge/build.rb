@@ -9,45 +9,10 @@ module Runeforge
   class Build
     class DirtyWorkingTree < Error; end
 
-    Step = Data.define(:title, :body)
-    Input = Data.define(:title, :text, :steps)
-
-    ITEM = /\A {0,3}(?:[-*+]|\d+[.)])\s+(?:\[([ xX])\]\s+)?(.*)\z/
-
+    # A file runs one step per unchecked task-list item; a prompt is one step. See PlanFile.
     def self.parse(input)
       from_file = File.file?(input.to_s)
-      text = from_file ? File.read(input) : input.to_s
-      raise Error, "nothing to build: the #{from_file ? 'file' : 'prompt'} is empty" if text.strip.empty?
-
-      heading = text[/^\#{1,6}\s+(.+)$/, 1]
-      first_line = text.lines.map(&:strip).find { |line| !line.empty? }
-      title = (heading || first_line).sub(/\A(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/, "").strip[0, 72]
-      steps = from_file ? list_steps(text) : nil
-      steps = [Step.new(title:, body: text.strip)] if steps.nil? || steps.empty?
-      Input.new(title:, text:, steps:)
-    end
-
-    # Top-level list items become steps; indented lines under an item belong to it. Checked
-    # items ("- [x] ...") are already done and skipped. Fewer than two items means "one step".
-    def self.list_steps(text)
-      items = []
-      current = nil
-      text.each_line(chomp: true) do |line|
-        if (match = line.match(ITEM))
-          current = { done: match[1].to_s.casecmp?("x"), lines: [match[2]] }
-          items << current
-        elsif current && (line.strip.empty? || line.start_with?("  ", "\t"))
-          current[:lines] << line
-        else
-          current = nil
-        end
-      end
-      return nil if items.size < 2
-
-      open = items.reject { |item| item[:done] }
-      raise Error, "every item in the task list is already checked off" if open.empty?
-
-      open.map { |item| Step.new(title: item[:lines].first.strip[0, 72], body: item[:lines].join("\n").strip) }
+      PlanFile.parse(from_file ? File.read(input) : input.to_s, list: from_file, source: from_file ? "file" : "prompt")
     end
 
     def self.slug(text) = text.to_s.downcase.gsub(/[^a-z0-9]+/, "-").gsub(/\A-|-\z/, "")[0, 40].sub(/-\z/, "")
@@ -92,6 +57,13 @@ module Runeforge
 
       FileUtils.mkdir_p(path)
       git("init", "-q", "-b", "main", dir: path)
+      if @env.config.dig("inbox", "enabled")
+        Inbox.scaffold.each do |file, content|
+          FileUtils.mkdir_p(File.dirname(File.join(path, file)))
+          File.write(File.join(path, file), content)
+        end
+        git("add", "-A", dir: path)
+      end
       initial_commit(path)
       @out.puts "Created #{path}"
       [path, true]

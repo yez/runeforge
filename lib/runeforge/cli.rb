@@ -189,6 +189,40 @@ module Runeforge
       end
     end
 
+    desc "inbox [REPO]", "Show the plans queued from each project's runeforge/inbox/"
+    long_desc <<~DESC
+      Plans committed to runeforge/inbox/ on a repository's base branch are built one at a time,
+      in the order they arrived. The background supervisor checks every inbox.poll_seconds;
+      --poll checks now.
+    DESC
+    option :poll, type: :boolean, desc: "Check the inboxes now instead of waiting for the supervisor"
+    option :all, type: :boolean, desc: "Include finished, dropped and superseded plans"
+    def inbox(repo = nil)
+      guard do
+        inbox = Inbox.new(env)
+        if options[:poll]
+          names = repo ? [env.repos.fetch(repo)[:name]] : env.repos.list.map { |r| r[:name] }
+          names.each do |name|
+            inbox.poll_repo(name)
+          rescue Error => e
+            say "#{name}: #{e.message}"
+          end
+        end
+        names = repo ? [repo] : env.db[:runeforge_plans].distinct.select_map(:repo).sort
+        say "No plans yet. Commit a markdown file to runeforge/inbox/ on a registered repository's base branch." if names.empty?
+        names.each do |name|
+          rows = inbox.queue(name)
+          rows = rows.reject { |p| %w[done dropped superseded cancelled].include?(p[:status]) } unless options[:all]
+          say "#{name}#{rows.empty? ? ': nothing queued' : ''}"
+          table = rows.map do |p|
+            step = p[:steps] ? "#{[p[:step] + (p[:status] == 'running' ? 1 : 0), p[:steps]].min}/#{p[:steps]}" : "-"
+            ["  #{p[:name]}", p[:status], step, p[:task_id] || "-", p[:reason].to_s[0, 70]]
+          end
+          print_table([["  PLAN", "STATUS", "STEP", "TASK", "REASON"], *table]) if table.any?
+        end
+      end
+    end
+
     desc "workers", "List live workers"
     def workers
       rows = env.db[:runeforge_workers].order(:id).all.map do |worker|

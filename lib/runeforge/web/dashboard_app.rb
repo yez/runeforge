@@ -84,8 +84,17 @@ module Runeforge
           tasks: tasks.map { |row| Events.task_fields(row) },
           messages: db[:runeforge_messages].where(state: %w[pending claimed]).order(:id).all.map { |row| message_json(row) },
           workers: db[:runeforge_workers].order(:id).all.map { |row| worker_json(row) },
+          plans: plans_json,
           events: recent.map { |row| Events.to_h(row) }
         }
+      end
+
+      # Every queued or running plan, plus the most recent finished ones.
+      def plans_json
+        table = db[:runeforge_plans]
+        active = table.where(status: Inbox::ACTIVE).order(:repo, :arrival).all
+        recent = table.exclude(status: Inbox::ACTIVE + ["superseded"]).order(Sequel.desc(:updated_at)).limit(15).all
+        (active + recent).map { |row| Inbox.fields(row).merge(arrival: row[:arrival], updated_at: row[:updated_at]&.utc&.iso8601) }
       end
 
       def task_detail(id)

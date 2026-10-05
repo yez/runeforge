@@ -81,6 +81,12 @@ module Runeforge
       # on GitHub (merge_method: merge, squash or rebase), directly for other remotes. true leaves
       # branches and pull requests for a person to merge.
       "manual_merge" => false,
+      # Plans committed to a project's runeforge/inbox/ are queued and built in order (see
+      # Runeforge::Inbox). The supervisor checks each registered repository this often.
+      "inbox" => {
+        "enabled" => true,
+        "poll_seconds" => 60
+      },
       "merge_method" => "merge",
       # Agents that go through the motions (sleeps and canned output) without calling an LLM,
       # git or the network. See Runeforge::DryRun.

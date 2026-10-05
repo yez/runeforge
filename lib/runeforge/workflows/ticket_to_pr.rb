@@ -83,3 +83,4 @@ end
 
 Runeforge.workflow(:jira_to_pr, &Runeforge::Workflows::TICKET_TO_PR)
 Runeforge.workflow(:build, &Runeforge::Workflows::TICKET_TO_PR)
+Runeforge.workflow(:inbox, &Runeforge::Workflows::TICKET_TO_PR)

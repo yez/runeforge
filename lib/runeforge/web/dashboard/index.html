@@ -113,7 +113,17 @@
   .spark.bad { background: var(--crack); box-shadow: 0 0 10px 3px var(--crack); }
 
   /* Side panel: tasks and the event feed */
-  aside { min-width: 0; border-left: 1px solid var(--iron-edge); display: grid; grid-template-rows: minmax(0, 1.3fr) minmax(0, 1fr); grid-template-columns: minmax(0, 1fr); min-height: 0; }
+  aside { min-width: 0; border-left: 1px solid var(--iron-edge); display: grid; grid-template-rows: auto minmax(0, 1.3fr) minmax(0, 1fr); grid-template-columns: minmax(0, 1fr); min-height: 0; }
+  #plans-section .list { max-height: 30vh; }
+  .plan { padding: 5px 8px; display: grid; gap: 2px; }
+  .plan .row { display: flex; gap: 8px; align-items: baseline; }
+  .plan .name { font-weight: 600; }
+  .plan .title { color: var(--ash); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+  .plan .state { font-size: 13px; color: var(--ash); }
+  .plan .state b { font-weight: 600; color: var(--text); }
+  .plan .state b.running { color: var(--flame); }
+  .plan .state b.blocked, .plan .state b.unmerged, .plan .state b.failed { color: var(--crack); }
+  .plan .state b.done { color: var(--brass); }
   aside section { display: flex; flex-direction: column; min-height: 0; }
   aside h3 { margin: 0; padding: 12px 16px 8px; font-size: 17px; font-weight: 600; }
   .list { overflow: auto; padding: 0 8px 10px; }
@@ -179,6 +189,10 @@
     <div class="sparks" id="sparks"></div>
   </section>
   <aside>
+    <section id="plans-section" hidden>
+      <h3>Plan queue</h3>
+      <div class="list" id="plans"></div>
+    </section>
     <section>
       <h3>Tasks</h3>
       <div class="list" id="tasks"></div>
@@ -203,7 +217,9 @@
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
+  const ACTIVE_PLANS = ["running", "unmerged", "blocked", "queued"];
   const state = {
+    plans: new Map(),
     tasks: new Map(), messages: new Map(), workers: new Map(), output: new Map(),
     lastStage: new Map(), selected: null, dryRun: false
   };
@@ -248,6 +264,7 @@
       ? `${supervisorQueue} result${supervisorQueue === 1 ? "" : "s"} to route`
       : "Routes every result to the next role";
     renderTasks();
+    renderPlans();
     const tasks = [...state.tasks.values()];
     $("in-flight").textContent = tasks.filter((t) => !TERMINAL.has(t.status) && t.status !== "blocked").length;
     $("worker-count").textContent = state.workers.size;
@@ -297,6 +314,24 @@
       (lines.length ? `<pre>${lines.map((l) => `<span>${esc(l)}</span>`).join("\n")}</pre>` : "") };
   }
 
+  // Plans from projects' runeforge/inbox/: what's running and waiting first, in queue order.
+  function renderPlans() {
+    const plans = [...state.plans.values()].filter((p) => p.status !== "superseded").sort((a, b) => {
+      const ra = ACTIVE_PLANS.includes(a.status) ? 0 : 1, rb = ACTIVE_PLANS.includes(b.status) ? 0 : 1;
+      if (ra !== rb) return ra - rb;
+      if (ra === 0) return a.repo === b.repo ? (a.arrival ?? 0) - (b.arrival ?? 0) : String(a.repo).localeCompare(b.repo);
+      return String(b.updated_at).localeCompare(String(a.updated_at));
+    }).slice(0, 12);
+    $("plans-section").hidden = plans.length === 0;
+    $("plans").innerHTML = plans.map((p) => {
+      const step = p.steps > 1 ? `, step ${Math.min(p.step + (p.status === "running" ? 1 : 0), p.steps)} of ${p.steps}` : "";
+      return `<div class="plan" title="${esc(p.repo)}: ${esc(p.path)}">
+        <div class="row"><span class="name">${esc(p.name)}</span><span class="title">${esc(p.title || "")}</span></div>
+        <div class="state"><b class="${esc(p.status)}">${esc(p.status)}</b>${esc(step)}${p.reason ? ` · ${esc(p.reason)}` : ""}</div>
+      </div>`;
+    }).join("");
+  }
+
   function renderTasks() {
     const tasks = [...state.tasks.values()].sort((a, b) => {
       const activeA = !TERMINAL.has(a.status), activeB = !TERMINAL.has(b.status);
@@ -329,6 +364,13 @@
     const who = d.role || "";
     switch (e.kind) {
       case "task.created": return [`${e.task_id} created: ${d.title || ""}`];
+      case "plan.queued": return [`plan ${d.name} queued in ${d.repo}`];
+      case "plan.running": return [`plan ${d.name} started (${e.task_id || ""})`];
+      case "plan.blocked": return [`plan ${d.name} waits: ${d.reason}`];
+      case "plan.unmerged": return [`plan ${d.name} not merged: ${d.reason}`, "bad"];
+      case "plan.done": return [`plan ${d.name} done`, "good"];
+      case "plan.failed": return [`plan ${d.name} failed: ${d.reason}`, "bad"];
+      case "plan.dropped": case "plan.cancelled": return [`plan ${d.name} ${e.kind.slice(5)}: ${d.reason}`];
       case "task.updated":
         if (d.status === "done") return [`${e.task_id} done${d.external_pr_url ? ` (${d.external_pr_url})` : ""}`, "good"];
         if (d.status === "failed" || d.status === "blocked") return [`${e.task_id} ${d.status}: ${d.error || ""}`, "bad"];
@@ -339,6 +381,10 @@
       case "message.dead": return [`${d.type} for ${e.task_id} gave up: ${d.error}`, "bad"];
       case "message.cancelled": return [`${d.type} for ${e.task_id} cancelled`];
       case "worker.started": return [`${e.actor} started`];
+      case "plan.queued": case "plan.running": case "plan.blocked": case "plan.unmerged": case "plan.done":
+      case "plan.failed": case "plan.dropped": case "plan.cancelled": case "plan.superseded":
+        state.plans.set(d.id, { ...(state.plans.get(d.id) || {}), ...d, updated_at: e.at });
+        break;
       case "worker.stopped": return [`${e.actor} stopped`];
       default: return null;
     }
@@ -471,6 +517,7 @@
     $("dry").hidden = !snap.dry_run;
     snap.tasks.forEach((t) => state.tasks.set(t.id, t));
     snap.workers.forEach((w) => state.workers.set(w.id, w));
+    (snap.plans || []).forEach((p) => state.plans.set(p.id, p));
     snap.messages.forEach((m) => state.messages.set(m.id, {
       ...m, claimedAt: m.state === "claimed" ? Date.now() : null
     }));

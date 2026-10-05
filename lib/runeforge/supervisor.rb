@@ -35,6 +35,7 @@ module Runeforge
     def tick
       mailbox.reap
       prune_events
+      poll_inbox
       handled = 0
       while (msg = mailbox.claim(Runeforge.recipient(lane, "supervisor")))
         handle(msg)
@@ -44,6 +45,16 @@ module Runeforge
     end
 
     PRUNE_EVERY = 600
+
+    # Background supervisors turn committed inbox plans into tasks (see Inbox). Foreground runs
+    # (with a lane) only handle their own steps.
+    def poll_inbox
+      return if lane || !env.config.dig("inbox", "enabled")
+      return if @inbox_at && Runeforge.now - @inbox_at < env.config.dig("inbox", "poll_seconds").to_f
+
+      @inbox_at = Runeforge.now
+      Inbox.new(env).poll.each { |error| warn "runeforge inbox: #{error}" }
+    end
 
     # Drops dashboard events older than events.retention_hours, at most every PRUNE_EVERY seconds.
     def prune_events

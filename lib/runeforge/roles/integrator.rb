@@ -9,7 +9,7 @@ module Runeforge
     # Safe to repeat: the push is idempotent, an existing PR is reused, and merged work is detected.
     class Integrator < Base
       def call
-        sha = msg.commit_sha || task[:head_sha]
+        sha = bookkeeping(msg.commit_sha || task[:head_sha])
         env.repos.push(task[:repo], branch: task[:branch], sha:)
         pr_url = task[:external_pr_url] || env.github.find_or_create_pull(
           repo_url: repo[:url], head: task[:branch], base: repo[:base_branch], title: pull_title, body: pull_body
@@ -20,7 +20,7 @@ module Runeforge
         result("integrate.done",
                { "pr_url" => pr_url, "branch" => task[:branch], "base" => repo[:base_branch], "merged" => !merged.nil?,
                  "merged_sha" => merged, "warnings" => warnings.compact },
-               commit_sha: sha, task_updates: { external_pr_url: pr_url, merged_sha: merged })
+               commit_sha: sha, task_updates: { external_pr_url: pr_url, merged_sha: merged, head_sha: sha })
       rescue Error => e
         result("integrate.failed", { "reason" => e.message }, commit_sha: sha)
       end
@@ -43,6 +43,49 @@ module Runeforge
       rescue Integrations::HTTPError, RepoStore::MergeBlocked, Git::CommandFailed => e
         warnings << "not merged into #{repo[:base_branch]}: #{e.message}; the work is on #{task[:branch]}"
         nil
+      end
+
+      # Runeforge's own commits on the task branch, merged along with the work: the runeforge/ folder
+      # for repositories that don't have one yet, and moving a finished inbox plan to done/.
+      def bookkeeping(sha)
+        return sha unless env.config.dig("inbox", "enabled")
+
+        committer = env.committer(task[:repo])
+        unless env.repos.exists?(task[:repo], sha, Inbox::INBOX)
+          sha = committer.host_commit(parent: sha, branch: task[:branch], write: Inbox.scaffold,
+                                      message: Committer.message("runeforge: add the inbox folder", bookkeeping_trailers))
+        end
+        plan = input["plan"]
+        return sha unless plan && plan["last"]
+
+        delete = env.repos.exists?(task[:repo], sha, plan["path"]) ? [plan["path"]] : []
+        committer.host_commit(parent: sha, branch: task[:branch], delete:,
+                              write: { done_path(sha, plan) => done_record(plan) },
+                              message: Committer.message("runeforge: #{plan['name']} is done", bookkeeping_trailers))
+      end
+
+      def bookkeeping_trailers = { "Agent-Task" => task[:id], "Agent-Message" => msg.id }
+
+      def input
+        @input ||= Message.parse_payload(env.db[:runeforge_messages].where(task_id: task[:id], type: "task.created").get(:payload) || "{}")
+      end
+
+      def done_path(sha, plan)
+        path = "#{Inbox::DONE}/#{plan['name']}.md"
+        env.repos.exists?(task[:repo], sha, path) ? "#{Inbox::DONE}/#{plan['name']}-#{plan['id']}.md" : path
+      end
+
+      # The plan as it was run, with a footer of what Runeforge did with it.
+      def done_record(plan)
+        row = env.db[:runeforge_plans].where(id: plan["id"]).first
+        text = row ? env.repos.blob(task[:repo], row[:blob]) : ""
+        ids = row ? JSON.parse(row[:task_ids] || "[]") : [task[:id]]
+        tasks = env.db[:runeforge_tasks].where(id: ids).all.sort_by { |t| ids.index(t[:id]) }
+        lines = tasks.map do |t|
+          "- `#{t[:id]}`: #{t[:title]} (#{t[:attempts]} attempt#{'s' unless t[:attempts] == 1}, #{t[:tokens_used]} tokens, " \
+            "branch `#{t[:branch]}`#{t[:merged_sha] ? ", merged as #{t[:merged_sha][0, 7]}" : ''})"
+        end
+        "#{text.rstrip}\n\n---\n\nBuilt by Runeforge, #{Runeforge.now.utc.strftime('%Y-%m-%d %H:%M UTC')}:\n\n#{lines.join("\n")}\n"
       end
 
       def pull_title = "#{task[:ticket] ? "#{task[:ticket]}: " : ''}#{task[:title]}"

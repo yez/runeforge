@@ -97,6 +97,9 @@ RSpec.describe Runeforge::Build do
       expect(File.read(File.join(target, "lib", "greeting.txt"))).to eq("greeting\n")
       expect(git(target, "branch", "--list", "runeforge/*")).to be_empty
       expect(env.tasks.list.first[:merged_sha]).to eq(git(target, "rev-parse", "main").strip)
+      # New projects start with the plan inbox.
+      expect(git(target, "show", "main~0:runeforge/README.md", "--format=")).to include("# Runeforge inbox")
+      expect(git(target, "log", "--format=%s", "main").lines.map(&:strip)).not_to include("runeforge: add the inbox folder")
     end
 
     it "gives each step its own branch, merged before the next step starts" do
@@ -147,7 +150,7 @@ RSpec.describe Runeforge::Build do
 
       expect(out.string).to include("! not merged into main: #{dir} has uncommitted changes on main",
                                     "Done, but not everything was merged", "runeforge/add-a-greeting")
-      expect(git(dir, "log", "--format=%s", "main..runeforge/add-a-greeting").lines.size).to eq(2)
+      expect(git(dir, "log", "--format=%s", "main..runeforge/add-a-greeting").lines.size).to eq(3) # plan, code, inbox folder
       expect(env.tasks.list.first[:merged_sha]).to be_nil
     end
 
@@ -185,7 +188,7 @@ RSpec.describe Runeforge::Build do
 
       expect(git(dir, "branch", "--show-current").strip).to eq("main")
       expect(git(dir, "status", "--porcelain")).to be_empty
-      expect(git(dir, "log", "--format=%s", "main..runeforge/add-a-greeting").lines.size).to eq(2)
+      expect(git(dir, "log", "--format=%s", "main..runeforge/add-a-greeting").lines.size).to eq(3) # plan, code, inbox folder
       expect(out.string).to include("Your checkout is unchanged", "git -C #{dir} switch runeforge/add-a-greeting")
     end
 

@@ -30,6 +30,16 @@ RSpec.describe Runeforge::Web::DashboardApp do
     expect(state["dry_run"]).to be(false)
   end
 
+  it "includes the plan queue" do
+    now = Runeforge.now
+    db[:runeforge_plans].insert(repo: "demo", path: "runeforge/inbox/export.md", name: "export", blob: "b" * 40, title: "Export",
+                                arrival: 3, updated: 3, status: "blocked", reason: "waiting on reports", after: '["reports"]',
+                                replaces: "[]", created_at: now, updated_at: now)
+    plans = body(app.get("/api/state"))["plans"]
+    expect(plans).to contain_exactly(include("name" => "export", "status" => "blocked", "reason" => "waiting on reports",
+                                             "after" => ["reports"], "arrival" => 3))
+  end
+
   it "returns one task with its messages" do
     detail = body(app.get("/api/tasks/T-1"))
     expect(detail["task"]).to include("id" => "T-1", "status" => "pending")

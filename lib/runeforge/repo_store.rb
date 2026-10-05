@@ -101,6 +101,34 @@ module Runeforge
       Git.run("diff", "--name-only", "--no-renames", "-z", from, to, dir: path(name)).split("\0")
     end
 
+    # True when everything `sha` brings is already in `base`: merging it would change nothing.
+    # Works however it was merged (merge commit, rebase, squash).
+    def landed?(name, sha, base: base_sha(name))
+      dir = path(name)
+      return true if ancestor?(dir, sha, base)
+
+      merged = Git.run("merge-tree", "--write-tree", base, sha, dir:, allow_failure: true)
+      !merged.nil? && merged.lines.first.strip == Git.run("rev-parse", "#{base}^{tree}", dir:).strip
+    end
+
+    def contains?(name, sha, base: base_sha(name)) = ancestor?(path(name), sha, base)
+
+    # Files under `dir` at `sha`: path => blob id.
+    def files(name, sha, dir)
+      Git.run("ls-tree", "-r", "-z", sha, "--", dir, dir: path(name)).split("\0").to_h do |entry|
+        meta, file = entry.split("\t", 2)
+        [file, meta.split(" ")[2]]
+      end
+    end
+
+    def blob(name, id) = Git.run("cat-file", "blob", id, dir: path(name)).force_encoding(Encoding::UTF_8).scrub
+
+    def exists?(name, sha, file) = !oid(name, sha, file).nil?
+
+    def branch_sha(name, branch)
+      Git.run("rev-parse", "--verify", "--quiet", "refs/heads/#{branch}^{commit}", dir: path(name), allow_failure: true)&.strip
+    end
+
     private
 
     def ancestor?(dir, older, newer)

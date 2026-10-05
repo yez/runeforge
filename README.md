@@ -119,6 +119,7 @@ the only secret that enters a container), `GITHUB_TOKEN`, `JIRA_EMAIL`, `JIRA_AP
 | `runeforge webhook` | Serves `POST /webhooks/jira?token=…` for issues labelled `runeforge` |
 | `runeforge dashboard [--port 9393]` | Serves the live dashboard (see below) |
 | `runeforge warcamp [--port 9393]` | The same live view, drawn as an orc war camp |
+| `runeforge inbox [REPO] [--poll] [--all]` | The plans queued from each project's `runeforge/inbox/` |
 | `runeforge demo` | Dry-run agents forever, plus the dashboard; no LLM, git or network |
 | `runeforge worker --role R --dry-run` | A worker whose agents only go through the motions |
 
@@ -201,6 +202,43 @@ Failures play a hit animation. Banners show the number of jobs waiting. Click an
 task and live output, or Cancel to stop its task. Drag to pan and scroll to zoom. The art is
 third-party; see [CREDITS.md](CREDITS.md). To rebuild it after changing `art/`, run
 `python3 script/build_warcamp_assets.py` (needs Pillow and NumPy).
+
+## Inbox
+
+Every project gets a `runeforge/` folder: new projects in their first commit, existing
+repositories with the first task Runeforge merges into them. Commit a markdown plan to
+`runeforge/inbox/` on the base branch and the background supervisor (`runeforge up`) builds it:
+
+```
+runeforge/
+├── README.md
+├── inbox/      # commit plans here
+└── done/       # finished plans, with a summary of the tasks that built them
+```
+
+- **Order:** plans run one at a time per repository, in the order they arrived on the base
+  branch: the position of the commit that added each file, following renames. File names only
+  break ties, and file dates are never used.
+- **Plans:** same format as `runeforge plan.md`: one task per unchecked task-list item, each on
+  its own branch and merged before the next; any other file is one task. The last step's merge
+  also moves the plan to `done/`.
+- **Front matter** (optional): `after: other-plan` waits until that plan is done;
+  `replaces: other-plan` unlocks that plan's acceptance tests; `title`, `max_attempts`.
+- **Changes:** edit a queued plan and it keeps its place; edit a running one and it restarts;
+  edit a failed one (for example, check off the items that already merged) to queue it again
+  at the back; delete one to drop or cancel it.
+- **Locked tests carry over:** each plan inherits the acceptance tests of every finished plan, so
+  a plan that contradicts an earlier one fails its review instead of quietly breaking it.
+- **Not merged:** if a plan's work can't be merged (branch protection, conflicts), the
+  repository's queue pauses until that work lands or the plan is removed from the inbox. With
+  `manual_merge: true`, plans stack on one shared `runeforge/inbox` branch instead, which starts
+  over from the base branch once everything on it has landed.
+- Coding agents can't change anything under `runeforge/`. The planner is told which plans are
+  still queued, so it doesn't build their work early.
+
+`runeforge inbox --poll` checks now rather than waiting `inbox.poll_seconds` (60). Both
+dashboards show the queue. `inbox.enabled: false` turns it off. The design is in
+[docs/plans/inbox.md](docs/plans/inbox.md).
 
 ## Merging
 

@@ -12,6 +12,10 @@ module Runeforge
       else
         sections << "## The request\n#{[input['title'] || task[:title], input['description']].compact.join("\n\n")}"
       end
+      if Array(input["queued"]).any?
+        sections << "## Plans queued after this one\nOther agents will build these later. Don't build any of them now, even if it seems natural; stay within this request.\n" +
+                    input["queued"].map { |title| "- #{title}" }.join("\n")
+      end
       if locked_paths.any?
         sections << "## Existing acceptance tests\nThese are locked from earlier steps. Keep them passing; change them only if this step truly requires it.\n" +
                     locked_paths.map { |path| "- #{path}" }.join("\n")
@@ -33,6 +37,7 @@ module Runeforge
 
         ## Rules
         - Do not implement the step itself. Another agent will, and it cannot change your test files.
+        - Do not change anything under `runeforge/` (the project's plan inbox); such changes are rejected.
         - Do not commit. Leave your changes in the working tree.
       JOB
       sections.join("\n\n")
@@ -53,6 +58,7 @@ module Runeforge
         ## Your job
         Change the code so the acceptance tests and the rest of the suite pass.
         Run the tests with: `#{test_command}`
+        Do not change anything under `runeforge/` (the project's plan inbox); such changes are rejected.
         Do not commit. Leave your changes in the working tree.
       PROMPT
       sections << "## Feedback from the previous attempt\n#{feedback}\n" if feedback && !feedback.to_s.strip.empty?

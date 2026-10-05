@@ -376,7 +376,7 @@
   // ---- Live state -------------------------------------------------------------------------------
   const state = {
     tasks: new Map(), messages: new Map(), workers: new Map(), output: new Map(),
-    lastStage: new Map(), units: new Map(), jobUnit: new Map(), hallPulse: 0, dryRun: false
+    lastStage: new Map(), units: new Map(), jobUnit: new Map(), hallPulse: 0, dryRun: false, plans: new Map()
   };
   let selected = null;   // unit key
   window.warcamp = { state };   // for poking at from the browser console
@@ -522,6 +522,12 @@
         if (u && next.length) u.bubble = { text: next[next.length - 1], t: 0 };
         break;
       }
+      case "plan.queued": case "plan.running": case "plan.blocked": case "plan.unmerged": case "plan.done":
+      case "plan.failed": case "plan.dropped": case "plan.cancelled": case "plan.superseded":
+        state.plans.set(d.id, { ...(state.plans.get(d.id) || {}), ...d });
+        if (live && e.kind === "plan.done") announce(`Plan ${d.name} is done`, false);
+        if (live && (e.kind === "plan.failed" || e.kind === "plan.unmerged")) announce(`Plan ${d.name} ${e.kind === "plan.failed" ? "failed" : "is not merged"}`, true);
+        break;
       case "worker.started":
         state.workers.set(e.actor, { id: e.actor, roles: d.roles || [] });
         ensureUnits(state.workers.get(e.actor));
@@ -632,7 +638,8 @@
     ctx.beginPath();
     ctx.moveTo(1, -62); ctx.lineTo(24 + sway, -60); ctx.lineTo(22 + sway, -36); ctx.lineTo(13 + sway, -40); ctx.lineTo(4, -34);
     ctx.closePath(); ctx.fill(); ctx.stroke();
-    const waiting = s.role && s.role !== "supervisor" ? [...state.messages.values()].filter((m) => m.role === s.role && m.state === "pending").length : 0;
+    const waiting = s.role === "supervisor" ? waitingPlans().length
+      : s.role ? [...state.messages.values()].filter((m) => m.role === s.role && m.state === "pending").length : 0;
     ctx.fillStyle = "#efe4cc";
     if (waiting) {
       ctx.font = "700 13px Cinzel, Georgia, serif"; ctx.textAlign = "center";
@@ -642,6 +649,12 @@
       ctx.fillStyle = "#8e1b12"; ctx.fillRect(10.5 + sway * 0.6, -51, 1.8, 1.8); ctx.fillRect(13.8 + sway * 0.6, -51, 1.8, 1.8);
     }
     ctx.restore();
+  }
+
+  // Plans from the projects' runeforge/inbox/ that haven't started yet, in queue order.
+  function waitingPlans() {
+    return [...state.plans.values()].filter((p) => ["queued", "blocked", "unmerged"].includes(p.status))
+      .sort((a, b) => (a.arrival ?? 0) - (b.arrival ?? 0));
   }
 
   function drawStake(s) {
@@ -866,6 +879,10 @@
       text = `${senderRole(d.sender)} reports ${d.type} for ${e.task_id}`; cls = bad ? "bad" : "";
     } else if (e.kind === "task.created") { text = `New task ${e.task_id}: ${d.title || ""}`; cls = "good"; }
     else if (e.kind === "message.dead") { text = `${d.type} for ${e.task_id} gave up: ${d.error}`; cls = "bad"; }
+    else if (e.kind === "plan.queued") { text = `A new plan arrives: ${d.name}`; cls = "good"; }
+    else if (e.kind === "plan.running") text = `The war chief takes up plan ${d.name}`;
+    else if (e.kind === "plan.blocked") text = `Plan ${d.name} waits: ${d.reason}`;
+    else if (e.kind === "plan.failed" || e.kind === "plan.unmerged") { text = `Plan ${d.name}: ${d.reason}`; cls = "bad"; }
     else if (e.kind === "worker.started") text = `${e.actor} reports for duty`;
     else if (e.kind === "worker.stopped") text = `${e.actor} has left the camp`;
     if (!text) return;
@@ -908,8 +925,18 @@
     const site = SITES[role];
     const waiting = [...state.messages.values()].filter((m) => m.role === role && m.state === "pending").length;
     const units = [...state.units.values()].filter((u) => u.role === role);
-    $("tip-body").innerHTML = `<b>${esc(site.name)}</b>${esc(site.label)}<br>
-      <em>${units.length} orc${units.length === 1 ? "" : "s"}, ${units.filter((u) => u.job).length} on a job, ${waiting} job${waiting === 1 ? "" : "s"} waiting</em>`;
+    if (role === "supervisor") {
+      const running = [...state.plans.values()].filter((p) => p.status === "running");
+      const queue = waitingPlans();
+      const line = (p) => `${esc(p.name)}${p.reason ? ` <em>(${esc(p.reason)})</em>` : ""}`;
+      $("tip-body").innerHTML = `<b>${esc(site.name)}</b>${esc(site.label)}, and takes plans from the inbox.<br>
+        ${running.length ? `Building: ${running.map(line).join(", ")}<br>` : ""}
+        ${queue.length ? `Next: ${queue.slice(0, 5).map(line).join(", ")}${queue.length > 5 ? `, and ${queue.length - 5} more` : ""}`
+          : "<em>No plans waiting. Commit one to runeforge/inbox/.</em>"}`;
+    } else {
+      $("tip-body").innerHTML = `<b>${esc(site.name)}</b>${esc(site.label)}<br>
+        <em>${units.length} orc${units.length === 1 ? "" : "s"}, ${units.filter((u) => u.job).length} on a job, ${waiting} job${waiting === 1 ? "" : "s"} waiting</em>`;
+    }
     tip.style.display = "block";
     const field = $("field").getBoundingClientRect();
     tip.style.left = `${Math.min(sx + 16, field.width - 290)}px`;
@@ -1013,6 +1040,7 @@
     $("dry").hidden = !snap.dry_run;
     snap.tasks.forEach((t) => state.tasks.set(t.id, t));
     snap.workers.forEach((w) => { state.workers.set(w.id, w); ensureUnits(w); });
+    (snap.plans || []).forEach((p) => state.plans.set(p.id, p));
     for (const m of snap.messages) {
       state.messages.set(m.id, m);
       // Orcs already on a job start at their work spot.

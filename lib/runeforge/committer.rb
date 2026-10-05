@@ -49,6 +49,27 @@ module Runeforge
       end
     end
 
+    # A commit Runeforge makes itself, not from an agent's patch: writes or deletes whole files on
+    # top of `parent` and moves `branch`. Used for the inbox's bookkeeping (see Inbox).
+    def host_commit(parent:, branch:, message:, write: {}, delete: [])
+      Dir.mktmpdir("runeforge-index") do |tmp|
+        index_env = { "GIT_INDEX_FILE" => File.join(tmp, "index") }
+        git("read-tree", parent, env: index_env)
+        # --index-info works in a bare repository; mode 0 removes an entry.
+        entries = delete.map { |path| "0 #{'0' * 40}\t#{path}" }
+        entries += write.map do |path, content|
+          "100644 #{git('hash-object', '-w', '--stdin', stdin: content).strip}\t#{path}"
+        end
+        git("update-index", "--index-info", env: index_env, stdin: entries.map { |line| "#{line}\n" }.join) if entries.any?
+        tree = git("write-tree", env: index_env).strip
+        return parent if tree == git("rev-parse", "#{parent}^{tree}").strip
+
+        sha = git("commit-tree", tree, "-p", parent, "-F", "-", env: @author_env, stdin: message).strip
+        git("update-ref", "refs/heads/#{branch}", sha)
+        sha
+      end
+    end
+
     private
 
     def apply(patch_file, env)
@@ -63,8 +84,10 @@ module Runeforge
       max_files = @limits.fetch("max_files_changed")
       raise PatchRejected, "patch changes #{changed.size} files (limit #{max_files})" if changed.size > max_files
 
-      meta = changed.select { |path| path == Workspace::META_DIR || path.start_with?("#{Workspace::META_DIR}/") }
-      raise PatchRejected, "patch touches #{Workspace::META_DIR}/: #{meta.join(', ')}" if meta.any?
+      [Workspace::META_DIR, Inbox::DIR].each do |dir|
+        hits = changed.select { |path| path == dir || path.start_with?("#{dir}/") }
+        raise PatchRejected, "patch touches #{dir}/: #{hits.join(', ')}" if hits.any?
+      end
 
       touched = changed & locked
       raise PatchRejected, "patch changes locked test files: #{touched.join(', ')}" if touched.any?

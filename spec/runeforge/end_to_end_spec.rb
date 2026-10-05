@@ -75,9 +75,10 @@ RSpec.describe "Ticket to pull request" do
       expect(env.github.calls.first).to include(head: "runeforge/T-1", base: "main")
       expect(git("rev-parse", "runeforge/T-1").strip).to eq(task[:head_sha])
       expect(git("show", "#{task[:head_sha]}:lib/greeting.txt")).to eq("Hello, Runeforge\n")
+      # The first task in a repository also adds the runeforge/ inbox folder.
       expect(git("log", "--format=%s", "main..runeforge/T-1").lines.map(&:strip))
-        .to eq(["runeforge: attempt 1 for T-1", "runeforge: plan for T-1"])
-      expect(git("log", "-1", "--format=%B", "runeforge/T-1")).to include("Agent-Task: T-1", "Agent-Attempt: 1", "Agent-Model: command")
+        .to eq(["runeforge: add the inbox folder", "runeforge: attempt 1 for T-1", "runeforge: plan for T-1"])
+      expect(git("log", "-1", "--format=%B", "runeforge/T-1~1")).to include("Agent-Task: T-1", "Agent-Attempt: 1", "Agent-Model: command")
       expect(JSON.parse(task[:locked_paths]).keys).to eq(["test/greeting_test.sh"])
       expect(task[:spec]).to eq("Say hello to Runeforge.\n")
       expect(task).to include(tokens_used: 240, cost_cents: 2, attempts: 1)
@@ -161,7 +162,8 @@ RSpec.describe "Ticket to pull request" do
       task = drive(env, "T-1", until_status: "done")
 
       expect(task[:attempts]).to eq(2)
-      expect(Runeforge::Git.run("show", "#{task[:head_sha]}^", "--format=%H", "--no-patch", dir: env.repos.path("demo")).strip)
+      retried = env.tasks.messages("T-1").select { |msg| msg.type == "code.done" }.last
+      expect(Runeforge::Git.run("show", "#{retried.commit_sha}^", "--format=%H", "--no-patch", dir: env.repos.path("demo")).strip)
         .to eq(plan_done.commit_sha)
     end
   end
