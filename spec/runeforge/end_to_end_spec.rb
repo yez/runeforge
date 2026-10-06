@@ -66,6 +66,21 @@ RSpec.describe "Ticket to pull request" do
       expect(git("rev-parse", "runeforge/T-1").strip).to eq(task[:head_sha])
     end
 
+    it "takes manual_merge from the project's entry under projects" do
+      env = build_env("agent" => { "command" => "sh #{fake_agent(plan: Helpers::PLAN_GREETING, code: Helpers::CODE_GREETING)}" },
+                      "projects" => { origin => { "manual_merge" => true } })
+      add_repo(env, url: origin)
+      create(env)
+      task = drive(env, "T-1", until_status: "done")
+      expect(task[:merged_sha]).to be_nil
+      expect(git("rev-parse", "runeforge/T-1").strip).to eq(task[:head_sha])
+
+      env2 = env_with(code: Helpers::CODE_GREETING, manual_merge: true)
+      env2.config.to_h["projects"] = { "demo" => { "manual_merge" => false } } # the repo's name works too
+      Runeforge::Intake.new(env2).create(repo: "demo", id: "T-2", title: "Greet", description: "Say hello")
+      expect(drive(env2, "T-2", until_status: "done")[:merged_sha]).to be_a(String)
+    end
+
     it "with manual_merge, pushes the branch and opens a PR without merging" do
       env = env_with(code: Helpers::CODE_GREETING, manual_merge: true)
       create(env)
@@ -98,6 +113,193 @@ RSpec.describe "Ticket to pull request" do
       expect(task[:spec].bytesize).to be > 500
       plan_done = env.tasks.messages("T-1").find { |msg| msg.type == "plan.done" }
       expect(plan_done.payload["spec"]).to eq(task[:spec])
+    end
+
+    it "records how to run the project and sends the coder back until the README says so" do
+      plan = <<~SH
+        #{Helpers::PLAN_GREETING}
+        printf '{"run_command": "cat lib/greeting.txt", "run_command_new": true}' > .runeforge/project.json
+      SH
+      code = <<~SH
+        #{Helpers::CODE_GREETING}
+        if grep -q "README.md" .runeforge/prompt.md && grep -q "Feedback from the previous attempt" .runeforge/prompt.md; then
+          printf '# Greeting\\n\\n## How to run\\n\\n    cat lib/greeting.txt\\n' > README.md
+        else
+          printf '# Greeting\\n' > README.md
+        fi
+      SH
+      env = env_with(code:, plan:)
+      create(env)
+      task = drive(env, "T-1", until_status: "done")
+
+      expect(env.repos.fetch("demo")).to include(run_command: "cat lib/greeting.txt", run_docs_required: true)
+      verdicts = env.tasks.messages("T-1").select { |msg| msg.type == "review.verdict" }
+      expect(verdicts.map { |msg| msg.payload["approved"] }).to eq([false, true])
+      expect(verdicts.first.payload["reasons"])
+        .to eq(["README.md doesn't say how to run the project; its How to run section must include `cat lib/greeting.txt`"])
+      expect(task[:attempts]).to eq(2)
+      expect(git("show", "main:README.md")).to include("cat lib/greeting.txt")
+    end
+
+    it "keeps an existing project's own launch method and only notes a README that doesn't mention it" do
+      plan = <<~SH
+        #{Helpers::PLAN_GREETING}
+        printf '{"run_command": "make run", "run_command_new": false}' > .runeforge/project.json
+      SH
+      env = env_with(code: Helpers::CODE_GREETING, plan:)
+      create(env)
+      task = drive(env, "T-1", until_status: "done")
+
+      expect(task[:attempts]).to eq(1)
+      expect(env.repos.fetch("demo")).to include(run_command: "make run", run_docs_required: false)
+      verdict = env.tasks.messages("T-1").find { |msg| msg.type == "review.verdict" }
+      expect(verdict.payload).to include("approved" => true, "reasons" => [])
+      expect(verdict.payload["notes"]).to eq(["README.md doesn't say how to run the project; its How to run section must include `make run`"])
+      expect(git("show", "main:README.md")).to eq("demo\n") # the project's own README was left alone
+    end
+
+    it "records the run command once, so later plans can't replace it" do
+      env = env_with(code: Helpers::CODE_GREETING, plan: <<~SH)
+        #{Helpers::PLAN_GREETING}
+        printf '{"run_command": "npm start", "run_command_new": false}' > .runeforge/project.json
+      SH
+      create(env)
+      drive(env, "T-1", until_status: "done")
+      env.repos.update("demo", run_command: "foreman start") # what a person set with `runeforge repo set`
+
+      second = <<~SH
+        mkdir -p test
+        printf 'Say bye.\\n' > .runeforge/spec.md
+        printf 'true\\n' > test/bye_test.sh
+        printf '{"run_command": "npm run dev", "run_command_new": true}' > .runeforge/project.json
+      SH
+      env2 = env_with(code: "mkdir -p lib && echo bye > lib/bye.txt", plan: second)
+      Runeforge::Intake.new(env2).create(repo: "demo", id: "T-2", title: "Bye", description: "Say bye")
+      drive(env2, "T-2", until_status: "done")
+      expect(env2.repos.fetch("demo")).to include(run_command: "foreman start", run_docs_required: false)
+    end
+
+    it "accepts the run command documented in CONTRIBUTING.md or docs/" do
+      plan = <<~SH
+        #{Helpers::PLAN_GREETING}
+        printf '{"run_command": "cat lib/greeting.txt", "run_command_new": true}' > .runeforge/project.json
+      SH
+      code = <<~SH
+        #{Helpers::CODE_GREETING}
+        mkdir -p docs && printf '# Running\\n\\nRun   cat   lib/greeting.txt\\n' > docs/running.md
+      SH
+      env = env_with(code:, plan:)
+      create(env)
+      task = drive(env, "T-1", until_status: "done")
+      expect(task[:attempts]).to eq(1)
+    end
+
+    it "fails a plan whose test command doesn't run any tests" do
+      plan = <<~SH
+        #{Helpers::PLAN_GREETING}
+        printf '{"test_command": "echo no tests ran; exit 5"}' > .runeforge/project.json
+      SH
+      env = env_with(code: Helpers::CODE_GREETING, plan:)
+      env.repos.update("demo", test_command: "")
+      create(env)
+      task = drive(env, "T-1", until_status: "failed")
+      expect(task[:error]).to include("planning failed: the test command `echo no tests ran; exit 5` didn't run the " \
+                                      "acceptance tests (pytest found no tests)")
+      expect(task[:attempts]).to eq(0)
+    end
+
+    it "rejects acceptance tests that read .runeforge/" do
+      plan = <<~SH
+        mkdir -p test
+        printf 'Say hello.\\n' > .runeforge/spec.md
+        printf 'grep -q hello .runeforge/project.json\\n' > test/greeting_test.sh
+      SH
+      env = env_with(code: Helpers::CODE_GREETING, plan:)
+      create(env)
+      task = drive(env, "T-1", until_status: "failed")
+      expect(task[:error]).to include("acceptance tests test/greeting_test.sh read .runeforge/, which Runeforge never commits")
+    end
+
+    it "fails planning with the agent's reason when the stack can't be built here" do
+      plan = "printf 'This is an iOS app: it needs Xcode on a Mac.\\n' > .runeforge/blocked.md\n"
+      env = env_with(code: Helpers::CODE_GREETING, plan:)
+      create(env)
+      task = drive(env, "T-1", until_status: "failed")
+      expect(task[:error]).to include("planning failed: the planner can't build this here: This is an iOS app: it needs Xcode on a Mac.")
+    end
+
+    it "sends a rejected plan back to the planner once with the reason, and continues when it's fixed" do
+      plan = <<~SH
+        if [ ! -f #{tmpdir}/planned ]; then
+          touch #{tmpdir}/planned
+          mkdir -p Sources && printf 'x\\n' > Sources/App.swift
+          printf 'spec\\n' > .runeforge/spec.md
+        else
+          printf '%s' "$RUNEFORGE_PROMPT" > #{tmpdir}/second-prompt.md
+          #{Helpers::PLAN_GREETING.gsub("\n", "\n  ")}
+        fi
+      SH
+      env = env_with(code: Helpers::CODE_GREETING, plan:)
+      create(env)
+      task = drive(env, "T-1", until_status: "done")
+
+      expect(env.tasks.messages("T-1").map(&:type).grep(/\Aplan\./)).to eq(%w[plan.request plan.failed plan.request plan.done])
+      expect(File.read(File.join(tmpdir, "second-prompt.md")))
+        .to include("## Your previous plan was rejected", "none of the changed files (Sources/App.swift) match test_globs")
+      expect(task[:status]).to eq("done")
+    end
+
+    it "fails after the planner's second rejected plan" do
+      plan = "mkdir -p Sources\nprintf 'spec\\n' > .runeforge/spec.md\nprintf 'x\\n' > Sources/App.swift\n"
+      env = env_with(code: Helpers::CODE_GREETING, plan:)
+      create(env)
+      task = drive(env, "T-1", until_status: "failed")
+      expect(env.tasks.messages("T-1").count { |m| m.type == "plan.request" }).to eq(2)
+      expect(task[:error]).to start_with("planning failed: the plan has no acceptance tests")
+    end
+
+    it "names the changed files when the plan has no acceptance tests" do
+      plan = "mkdir -p Sources\nprintf 'spec\\n' > .runeforge/spec.md\nprintf 'x\\n' > Sources/App.swift\n"
+      env = env_with(code: Helpers::CODE_GREETING, plan:)
+      create(env)
+      task = drive(env, "T-1", until_status: "failed")
+      expect(task[:error]).to include("the plan has no acceptance tests: none of the changed files (Sources/App.swift) match test_globs")
+    end
+
+    it "stops a platform app before the planner's agent runs when this machine can't build it, and records why" do
+      allow(Runeforge::Platform).to receive(:mac?).and_return(false)
+      env = env_with(code: Helpers::CODE_GREETING)
+      Runeforge::Intake.new(env).create(repo: "demo", id: "T-1", title: "Build an iOS app", description: "With SwiftUI")
+      task = drive(env, "T-1", until_status: "failed")
+
+      expect(task[:error]).to include("incompatible build environment: an Apple-platform app (iOS/macOS) (the request mentions iOS) " \
+                                      "needs macOS with Xcode", "To fix: build it on a Mac with Xcode")
+      expect(task[:tokens_used].to_i).to eq(0)
+      expect(env.repos.fetch("demo")).to include(platform: "apple", platform_status: "incompatible")
+      expect(env.repos.fetch("demo")[:platform_note]).to include("To fix: build it on a Mac with Xcode")
+    end
+
+    it "records a portable project as compatible" do
+      env = env_with(code: Helpers::CODE_GREETING)
+      create(env)
+      drive(env, "T-1", until_status: "done")
+      expect(env.repos.fetch("demo")).to include(platform: nil, platform_status: "compatible", platform_note: "a portable project")
+    end
+
+    it "stops when the coder keeps committing nothing after the tests failed" do
+      code = <<~SH
+        if [ ! -f #{tmpdir}/first ]; then touch #{tmpdir}/first; mkdir -p lib; echo wrong > lib/greeting.txt; else mkdir -p .runeforge; echo '{}' > .runeforge/project.json; fi
+      SH
+      env = env_with(code:)
+      create(env)
+      task = drive(env, "T-1", until_status: "failed")
+
+      expect(task[:attempts]).to eq(3) # one real attempt, then two with nothing to commit
+      expect(task[:error]).to include("the coder changed nothing on its last 2 attempts after the tests failed",
+                                      "FAIL test/greeting_test.sh")
+      reasons = env.tasks.messages("T-1").select { |m| m.type == "code.failed" }.map { |m| m.payload["reason"] }
+      expect(reasons).to all(eq("the agent only changed files in .runeforge/ (project.json), which Runeforge never commits; " \
+                                "the tests and code must not depend on them"))
     end
 
     it "keeps installed dependencies and caches out of the coder's patch" do

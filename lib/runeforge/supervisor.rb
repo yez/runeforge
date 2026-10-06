@@ -15,6 +15,7 @@ module Runeforge
       "integrate.request" => "integrating"
     }.freeze
     LLM_COMMANDS = %w[plan.request code.request].freeze
+    PLAN_ATTEMPTS = 2
 
     attr_reader :env, :mailbox, :lane
 
@@ -114,7 +115,7 @@ module Runeforge
       def retry_or_fail(feedback)
         text = feedback_text(feedback)
         limit = task[:attempts] >= task[:max_attempts] && "attempt limit reached (#{task[:attempts]}/#{task[:max_attempts]})"
-        reason = budget_exhausted || limit
+        reason = stuck_on_failed_tests || budget_exhausted || limit
         return fail!("#{reason}. Last feedback: #{text[0, 500]}") if reason
 
         send_to(:coder, "code.request", sha: task[:head_sha], feedback: text)
@@ -136,6 +137,14 @@ module Runeforge
           value = project[key.to_s].to_s.strip
           fields[key] = value if repo[key].to_s.strip.empty? && !value.empty?
         end
+        # How to run the project is recorded once, like the test command; `runeforge repo set`
+        # changes it. Its README is only required to say it when the planner defined it, never
+        # for a project's own launch method.
+        run_command = project["run_command"].to_s.strip
+        if repo[:run_command].to_s.strip.empty? && !run_command.empty?
+          updates[:run_command] = run_command
+          updates[:run_docs_required] = project["run_command_new"] == true
+        end
         @env.repos.update(task[:repo], updates) if updates.any?
       end
 
@@ -150,6 +159,14 @@ module Runeforge
       end
 
       def dependency_checks = @env.db[:runeforge_messages].where(task_id: task[:id], type: "deps.check").count
+
+      def plan_requests = @env.db[:runeforge_messages].where(task_id: task[:id], type: "plan.request").count
+
+      # The request the planner was given, to give it again.
+      def plan_input
+        row = @env.db[:runeforge_messages].where(task_id: task[:id], type: "plan.request").order(Sequel.desc(:id)).first
+        row ? Message.from_row(row).payload.fetch("input", {}) : {}
+      end
 
       # Moves the task branch back to `sha` and drops anything in flight.
       def restart_from!(sha)
@@ -173,6 +190,27 @@ module Runeforge
       end
 
       private
+
+      # Attempts in a row with nothing to commit, after a failed test run, before giving up.
+      STUCK_AFTER = 2
+      NO_PROGRESS = %r{\Athe agent (?:made no changes|only changed files in \.runeforge/)}
+
+      # The coder can't change the test command or the locked tests. When it keeps committing
+      # nothing while the tests fail, more attempts won't help: the plan is what's wrong.
+      def stuck_on_failed_tests
+        messages = @env.db[:runeforge_messages].where(task_id: task[:id], type: %w[code.done code.failed test.result])
+                       .order(Sequel.desc(:id)).limit(20).all.map { |row| Message.from_row(row) }
+        recent = messages.select { |m| m.type.start_with?("code.") }.first(STUCK_AFTER)
+        return nil unless recent.size == STUCK_AFTER &&
+                          recent.all? { |m| m.type == "code.failed" && m.payload["reason"].to_s.match?(NO_PROGRESS) }
+
+        test = messages.find { |m| m.type == "test.result" && m.payload["passed"] == false }
+        return nil unless test
+
+        "the coder changed nothing on its last #{STUCK_AFTER} attempts after the tests failed, so the test command " \
+          "or the locked tests are probably wrong (the coder can't change either). Last test output: " \
+          "#{test.payload['output_tail'].to_s[-800..] || test.payload['output_tail']}"
+      end
 
       def budget_exhausted
         if task[:deadline_at] && Runeforge.now > task[:deadline_at]

@@ -175,7 +175,7 @@ module Runeforge
     class Integrator < Role
       def call
         number = @rng.rand(100..999)
-        merging = !env.config["manual_merge"]
+        merging = !env.manual_merge?(task[:repo])
         work([
                "Pushing #{short(msg.commit_sha)} to #{task[:branch]}",
                "Opening pull request ##{number}",

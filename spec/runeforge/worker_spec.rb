@@ -46,6 +46,23 @@ RSpec.describe Runeforge::Worker do
       expect(db[:runeforge_workers].count).to eq(0)
     end
 
+    it "announces itself before its first claim when driven one job at a time, as a foreground build does" do
+      env = build_env
+      start_task(env)
+      worker = described_class.new(env, roles: ["planner"])
+      worker.work_once
+      worker.work_once
+
+      events = env.db[:runeforge_events].order(:id).all
+      started = events.select { |e| e[:kind] == "worker.started" && e[:actor] == worker.id }
+      claimed = events.find { |e| e[:kind] == "message.claimed" && e[:actor] == worker.id }
+      expect(started.size).to eq(1)
+      expect(started.first[:id]).to be < claimed[:id]
+
+      worker.unregister
+      expect(env.db[:runeforge_events].where(kind: "worker.stopped", actor: worker.id).count).to eq(1)
+    end
+
     it "refuses unknown roles" do
       expect { described_class.new(build_env, roles: ["wizard"]) }.to raise_error(Runeforge::Error, /unknown roles: wizard/)
     end

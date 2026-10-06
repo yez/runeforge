@@ -154,6 +154,64 @@ RSpec.describe Runeforge::Build do
       expect(env.tasks.list.first[:merged_sha]).to be_nil
     end
 
+    it "ends by saying how to run what it built" do
+      plan = "#{plan_script}\nprintf '{\"test_command\": \"for t in test/*_test.sh; do sh $t || exit 1; done\", \"run_command\": \"cat lib/greeting.txt\", \"run_command_new\": true}' > .runeforge/project.json\n"
+      code = "#{code_script}\nprintf '## How to run\\n\\n    cat lib/greeting.txt\\n' > README.md\n"
+      env = build_env("agent" => { "command" => "sh #{fake_agent(plan:, code:)}" })
+              .tap { |e| e.github = Helpers::FakeGitHub.new(opens_prs: false) }
+      target = File.join(tmpdir, "greeter")
+      expect(run_build(env, "Add a greeting", answers: "#{target}\n")).to be(true)
+
+      expect(out.string).to include("Run it:\n  cd #{target}\n  cat lib/greeting.txt")
+    end
+
+    it "lists the steps and asks before building more than ten" do
+      env = build_env_for
+      plan = File.join(tmpdir, "long.md")
+      File.write(plan, "# Big\n\n#{(1..12).map { |n| "- Add part #{n}\n" }.join}")
+      expect { run_build(env, plan, answers: "n\n") }.to raise_error(Runeforge::Error, /stopped before building/)
+      expect(out.string).to include("12 steps:", " 1. Add part 1", "12. Add part 12", "Build all 12 steps? [y/N]")
+      expect(env.tasks.list).to be_empty
+    end
+
+    it "stops an Apple-platform request headed for the Linux sandbox, and says what to set" do
+      env = build_env("sandbox" => { "mode" => "docker" })
+      dir = make_project
+      expect { run_build(env, "Build an iOS app with SwiftUI", dir:, answers: "n\n") }
+        .to raise_error(Runeforge::Error, /stopped before building: build it on a machine with macOS with Xcode/)
+      expect(out.string).to include("This looks like an Apple-platform app (iOS/macOS) (the request mentions iOS) needs macOS with Xcode",
+                                    "projects: { #{dir}: { sandbox: none } }", "Continue anyway? [y/N]")
+      expect(env.tasks.list).to be_empty
+    end
+
+    it "says to install Xcode when an Apple project runs on a Mac without it" do
+      allow(Runeforge::Platform).to receive(:mac?).and_return(true)
+      allow(Runeforge::Platform).to receive(:capture).and_return(["xcode-select: error: tool 'xcodebuild' requires Xcode", false])
+      dir = make_project
+      env = build_env("sandbox" => { "mode" => "docker" }, "projects" => { dir => { "sandbox" => "none" } })
+      expect { run_build(env, "Build an iOS app", dir:, answers: "n\n") }.to raise_error(Runeforge::Error, /install the full Xcode app/)
+      expect(out.string).to include("this machine (macOS, no Xcode (Command Line Tools only)), no sandbox")
+    end
+
+    it "marks the task platform_confirmed when the person builds anyway" do
+      env = build_env("sandbox" => { "mode" => "docker" })
+      runner = described_class.new(env, input: "Build an iOS app", stdin: StringIO.new("y\n"), stdout: out)
+      runner.send(:platform_check!, nil)
+      expect(runner.instance_variable_get(:@platform_confirmed)).to be(true)
+    end
+
+    it "runs a project set to sandbox: none on this machine while the default is Docker" do
+      dir = make_project
+      agent = fake_agent(plan: plan_script, code: code_script)
+      env = build_env("sandbox" => { "mode" => "docker" }, "agent" => { "command" => "sh #{agent}" },
+                      "projects" => { dir => { "sandbox" => "none" } })
+      env.github = Helpers::FakeGitHub.new(opens_prs: false)
+      allow(Runeforge::Platform).to receive_messages(mac?: true, xcode: Runeforge::Platform::Xcode.new(version: "Xcode 27.0", problem: nil, fix: nil))
+      expect(run_build(env, "Add a greeting for the iOS app", dir:)).to be(true) # no Apple warning: it runs locally
+      expect(File.read(File.join(dir, "lib", "greeting.txt"))).to eq("greeting\n")
+      expect(out.string).not_to include("Apple-platform")
+    end
+
     it "with manual_merge, creates the project and leaves it on the new branch" do
       env = build_env_for(manual_merge: true)
       target = File.join(tmpdir, "greeter")

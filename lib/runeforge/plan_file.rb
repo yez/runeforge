@@ -60,6 +60,42 @@ module Runeforge
       meta.reject { |_key, value| value.nil? || value == "" }
     end
 
+    HEADING = /\A(\#{1,6})\s+(.+?)\s*#*\s*\z/
+    # Headings that name a unit of work: "Step 3: ...", "Phase 2 - ...", "Milestone 1", "4. ...".
+    STEP_HEADING = /\A(?:\[[ xX]\]\s*)?(?:(?:step|phase|milestone|stage|part|task|sprint)\b\s*\d*|\d+[.):]?\s)/i
+    CHECKED_HEADING = /\A\[[xX]\]\s*/
+
+    # Steps from a document organized by headings ("### Step 1: ...", "## Phase 2 ..."): each
+    # section under such a heading is one step, bullets included. The heading level with the
+    # most step-like headings wins (the deeper one on a tie), so steps inside phases beat the
+    # phases. Headings checked off ("### [x] Step 1") are skipped. Nil when fewer than two.
+    def self.heading_steps(text)
+      headings = []
+      fence = false
+      lines = text.lines(chomp: true)
+      lines.each_with_index do |line, index|
+        fence = !fence if line.lstrip.start_with?("```", "~~~")
+        next if fence || !(match = line.match(HEADING))
+
+        headings << { index:, level: match[1].size, text: match[2].strip }
+      end
+      levels = headings.select { |h| h[:text].match?(STEP_HEADING) }.group_by { |h| h[:level] }
+      level, chosen = levels.max_by { |lvl, list| [list.size, lvl] }
+      return nil if chosen.nil? || chosen.size < 2
+
+      steps = chosen.filter_map do |heading|
+        stop = headings.find { |h| h[:index] > heading[:index] && h[:level] <= level }&.dig(:index) || lines.size
+        next if heading[:text].match?(CHECKED_HEADING)
+
+        title = heading[:text].sub(CHECKED_HEADING, "").gsub(/[*_`]/, "").strip
+        body = lines[heading[:index]...stop].join("\n").strip.sub(/\n+(?:-{3,}|\*{3,}|_{3,})\s*\z/, "")
+        Step.new(title: title[0, 72], body:)
+      end
+      raise Error, "every step heading is already checked off" if steps.empty?
+
+      steps
+    end
+
     # Top-level list items become steps; indented lines under an item belong to it. Checked
     # items ("- [x] ...") are already done and skipped. Fewer than two items means "one step".
     def self.list_steps(text)
@@ -89,7 +125,7 @@ module Runeforge
       heading = text[/^\#{1,6}\s+(.+)$/, 1]
       first_line = text.lines.map(&:strip).find { |line| !line.empty? }
       @title = (meta["title"] || heading || first_line).sub(/\A(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/, "").strip[0, 72]
-      steps = list ? self.class.list_steps(text) : nil
+      steps = list ? (self.class.heading_steps(text) || self.class.list_steps(text)) : nil
       @steps = steps.nil? || steps.empty? ? [Step.new(title: @title, body: text.strip)] : steps
     end
 

@@ -21,8 +21,7 @@ module Runeforge
     end
 
     def run(stop: -> { false })
-      register
-      Events.emit(env.db, "worker.started", actor: id, roles:)
+      announce
       until stop.call
         next if work_once
 
@@ -36,6 +35,7 @@ module Runeforge
     def unregister
       workers.where(id:).delete
       Events.emit(env.db, "worker.stopped", actor: id, roles:)
+      @announced = false
     end
 
     # Kills whatever sandbox is running right now (used for Ctrl-C in the foreground).
@@ -43,6 +43,7 @@ module Runeforge
 
     # Handles at most one message. Returns true if it did any work.
     def work_once
+      announce
       msg = mailbox.claim(roles.map { |role| Runeforge.recipient(lane, role) })
       return false unless msg
 
@@ -53,7 +54,8 @@ module Runeforge
     private
 
     def process(msg)
-      sandbox = @sandbox = env.new_sandbox(image: image_for(msg))
+      project = project_for(msg)
+      sandbox = @sandbox = env.new_sandbox(image: project&.dig(:image), project:)
       beat(msg)
       heartbeat = start_heartbeat(msg, sandbox)
       role = Runeforge.role_of(msg.recipient)
@@ -70,9 +72,10 @@ module Runeforge
       beat
     end
 
-    def image_for(msg)
+    # The message's repo: its image, and its per-project sandbox mode.
+    def project_for(msg)
       task = env.tasks.find(msg.task_id)
-      task && env.repos.fetch(task[:repo])[:image]
+      task && env.repos.fetch(task[:repo])
     rescue Error
       nil
     end
@@ -89,6 +92,16 @@ module Runeforge
       rescue StandardError
         nil
       end
+    end
+
+    # Registers and records worker.started once, before the first claim, however the worker is
+    # driven (#run in the background, #work_once in a foreground build), so live views know it.
+    def announce
+      return if @announced
+
+      register
+      Events.emit(env.db, "worker.started", actor: id, roles:)
+      @announced = true
     end
 
     def register

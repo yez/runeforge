@@ -110,7 +110,7 @@ module Runeforge
         "database" => @options[:database],
         "home" => @options[:home],
         "sandbox" => { "mode" => @options[:sandbox], "image" => @options[:image] }.compact,
-        "agent" => { "adapter" => @options[:adapter] }.compact,
+        "agent" => { "model" => @options[:model], "adapter" => @options[:adapter] }.compact,
         "workers" => Config::DEFAULTS["workers"]
       }.compact.reject { |_key, value| value.respond_to?(:empty?) && value.empty? }
       FileUtils.mkdir_p(File.dirname(@config_path))
@@ -251,9 +251,16 @@ module Runeforge
 
     def check_secrets
       missing = []
-      key_env = @env.config.dig("agent", "key_env")
-      unless ENV[key_env] || (runtime == "none" && @env.adapter.key_env && ENV[@env.adapter.key_env])
-        missing << "#{key_env} (LLM key passed to agents)"
+      # An API key or a subscription token per role; unsandboxed agents can use the person's own login.
+      if runtime != "none"
+        %w[planner coder].each do |role|
+          agent = @env.agent(role)
+          next if agent.adapter.key_env.nil? || @env.agent_key_env(role).any?
+
+          token = agent.adapter.oauth_env && agent.settings["oauth_token_env"]
+          options = @env.key_sources(agent).first(2).join(" or ")
+          missing << "#{options}#{token ? " or #{token} (from `claude setup-token`)" : ''} (#{role}: #{agent.label})"
+        end
       end
       github_env = @env.config.dig("github", "token_env")
       missing << "#{github_env} (opening pull requests)" unless ENV[github_env]

@@ -36,7 +36,7 @@ module Runeforge
         packages = ask(missing, repo)
         return outcome(msg, "deps.declined", "missing" => missing) unless packages
 
-        install(repo, packages) if @env.sandboxed? && packages.any?
+        install(repo, packages) if @env.sandboxed?(repo) && packages.any?
         repo = @env.repos.fetch(repo[:name])
       end
     end
@@ -52,13 +52,13 @@ module Runeforge
 
       script = tools.map { |tool| "command -v #{tool} >/dev/null 2>&1 || echo #{tool}" }.join("\n")
       Dir.mktmpdir("runeforge-deps") do |dir|
-        @env.new_sandbox(image: repo[:image]).run(workdir: dir, script:).stdout.split.grep(TOOL)
+        @env.new_sandbox(image: repo[:image], project: repo).run(workdir: dir, script:).stdout.split.grep(TOOL)
       end
     end
 
     # Returns packages to install ([] means "check again"), or nil when the person declines.
     def ask(missing, repo)
-      if @env.sandboxed?
+      if @env.sandboxed?(repo)
         image = repo[:image] || @env.config.dig("sandbox", "image")
         suggested = missing.map { |tool| PACKAGES.fetch(tool, tool) }.uniq
         @output.puts "\n  The sandbox image #{image} is missing: #{missing.join(', ')}"
