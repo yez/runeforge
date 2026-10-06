@@ -1,7 +1,7 @@
 # Runeforge
 
 <p align="center">
-![RUNEFORGE](runeforge.jpeg)
+  <img src="runeforge.jpeg" alt="Runeforge">
 </p>
 
 Runeforge turns tickets into tested, merged changes by running coding-agent CLIs (Claude Code,
