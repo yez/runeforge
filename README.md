@@ -1,5 +1,7 @@
 # Runeforge
 
+![RUNEFORGE](runeforge.jpg)
+
 Runeforge turns tickets into tested, merged changes by running coding-agent CLIs (Claude Code,
 Codex, Aider) through a fixed workflow:
 
