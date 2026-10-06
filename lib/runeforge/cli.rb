@@ -11,10 +11,18 @@ module Runeforge
 
     no_commands do
       def env
-        @env ||= Environment.load(config_path:, database: options[:database], must_exist: !options[:config].nil?)
+        @env ||= begin
+          warn_stray_config
+          Environment.load(config_path:, database: options[:database], must_exist: !options[:config].nil?)
+        end
       end
 
       def config_path = Config.locate(options[:config])
+
+      def warn_stray_config
+        stray = Config.stray_config(config_path)
+        warn "runeforge: ignoring #{stray}; settings are read from #{config_path} (move it there, or pass -c)" if stray
+      end
 
       def guard
         yield
@@ -60,10 +68,94 @@ module Runeforge
       end
     end
 
+    desc "set NAME", "Change a registered repository's commands"
+    long_desc <<~DESC
+      Sets how Runeforge tests, prepares and runs a repository's project. --run-command records
+      the project's own launch command (Runeforge won't replace it); --require-run-docs makes the
+      reviewer reject work whose README doesn't contain it.
+    DESC
+    option :test_command
+    option :setup_command
+    option :run_command
+    option :require_run_docs, type: :boolean, desc: "Reject work whose README doesn't contain the run command"
+    option :base_branch
+    option :image
+    def set(name)
+      guard do
+        env.repos.fetch(name)
+        fields = { test_command: options[:test_command], setup_command: options[:setup_command],
+                   run_command: options[:run_command], base_branch: options[:base_branch], image: options[:image] }.compact
+        fields[:run_docs_required] = options[:require_run_docs] unless options[:require_run_docs].nil?
+        raise Error, "nothing to change; pass e.g. --run-command 'npm start'" if fields.empty?
+
+        env.repos.update(name, fields)
+        repo = env.repos.fetch(name)
+        say "#{name}: test #{repo[:test_command].to_s.empty? ? '-' : repo[:test_command]}, " \
+            "run #{repo[:run_command].to_s.empty? ? '-' : repo[:run_command]}" \
+            "#{repo[:run_docs_required] ? ' (README must say it)' : ''}"
+      end
+    end
+
     desc "list", "List registered repositories"
     def list
-      rows = env.repos.list.map { |repo| [repo[:name], repo[:url], repo[:base_branch], repo[:test_command]] }
-      print_table([%w[NAME URL BASE TEST], *rows])
+      rows = env.repos.list.map do |repo|
+        [repo[:name], repo[:url], repo[:base_branch], repo[:test_command], repo[:run_command].to_s.empty? ? "-" : repo[:run_command]]
+      end
+      print_table([%w[NAME URL BASE TEST RUN], *rows])
+    end
+  end
+
+  class ConfigCommand < Command
+    desc "edit", "Open the config in your editor ($VISUAL, $EDITOR, else vi), then check it"
+    long_desc <<~DESC
+      Opens ~/.runeforge/runeforge.yml (or the file -c / RUNEFORGE_CONFIG names), creating it with
+      commented examples if it doesn't exist. After you save, the file is checked; if something is
+      wrong you can edit it again.
+    DESC
+    def edit
+      guard do
+        path = config_path
+        unless File.exist?(path)
+          FileUtils.mkdir_p(File.dirname(path))
+          File.write(path, Config::STARTER)
+          say "Created #{path}"
+        end
+        loop do
+          open_editor(path)
+          problems = Config.problems(path)
+          break say("#{path} looks good.") if problems.empty?
+
+          say "Problems in #{path}:"
+          problems.each { |problem| say "  - #{problem}" }
+          raise Error, "fix #{path} and run `runeforge config edit` again" unless $stdin.tty?
+          break if ask("Edit it again? [Y/n]").to_s.strip.downcase.start_with?("n")
+        end
+      end
+    end
+
+    desc "path", "Print the config file in use"
+    def path
+      say config_path
+    end
+
+    desc "show", "Print the settings in effect: the config file merged over the defaults"
+    def show
+      guard do
+        problems = Config.problems(config_path)
+        problems.each { |problem| warn "runeforge: #{problem}" }
+        say "# #{File.exist?(config_path) ? config_path : "#{config_path} (not created yet; these are the defaults)"}"
+        say YAML.dump(env.config.to_h).delete_prefix("---\n")
+      end
+    end
+
+    no_commands do
+      def open_editor(path)
+        editor = [ENV.fetch("VISUAL", nil), ENV.fetch("EDITOR", nil)].map(&:to_s).find { |value| !value.strip.empty? } || "vi"
+        command = Shellwords.split(editor)
+        ok = system(*command, path)
+        raise Error, "could not run your editor (#{editor}); set $VISUAL or $EDITOR" if ok.nil?
+        raise Error, "#{editor} exited with an error; #{path} was left as it is" unless ok
+      end
     end
   end
 
@@ -94,11 +186,25 @@ module Runeforge
 
         arg.start_with?("-db=") ? "--database=#{arg.delete_prefix('-db=')}" : arg
       end
+      args = dir_first(args)
       if args.first && !args.first.start_with?("-") && !command?(args.first)
         refuse_bare_word(args.first)
         args = ["build", *args]
       end
       super(args, config)
+    end
+
+    # `runeforge -d DIR status` (or any command) reads like `runeforge status -d DIR`; with no
+    # command after it, `runeforge -d DIR "prompt"` builds, as before.
+    def self.dir_first(args)
+      dir_args =
+        if %w[-d --dir].include?(args[0]) && args.size >= 2 then args.first(2)
+        elsif args[0].to_s.start_with?("--dir=") then args.first(1)
+        end
+      return args unless dir_args
+
+      rest = args.drop(dir_args.size)
+      rest.first && command?(rest.first) ? [rest.first, *dir_args, *rest.drop(1)] : ["build", *dir_args, *rest]
     end
 
     # A single word that is neither a command nor a file is far more likely a mistyped command (or
@@ -141,6 +247,9 @@ module Runeforge
     desc "repo SUBCOMMAND", "Repository commands"
     subcommand "repo", RepoCommand
 
+    desc "config SUBCOMMAND", "Edit, locate or show the config (~/.runeforge/runeforge.yml)"
+    subcommand "config", ConfigCommand
+
     desc "task SUBCOMMAND", "Task commands"
     subcommand "task", TaskCommand
 
@@ -161,9 +270,19 @@ module Runeforge
       print_table([%w[TASK STATUS ATTEMPTS REPO UPDATED TITLE], *rows])
     end
 
-    desc "status TASK", "Show a task and its message history"
-    def status(id)
+    desc "status [TASK]", "Show a task and its history, or with -d DIR a project: platform, build environment, tasks"
+    long_desc <<~DESC
+      With TASK: the task and every message. With -d DIR (or `runeforge -d DIR status`): the
+      project in DIR: whether it can be built where Runeforge builds it (platform-specific apps
+      like iOS, macOS and Android need their toolchain), how it runs and merges, its recent tasks
+      and queued plans.
+    DESC
+    option :dir, aliases: "-d", desc: "A project directory"
+    def status(id = nil)
       guard do
+        next project_status(File.expand_path(options[:dir])) if options[:dir]
+        raise Error, "give a TASK, or -d DIR for a project" unless id
+
         task = env.tasks.find!(id)
         say task_header(task)
         say "─" * 72
@@ -283,6 +402,7 @@ module Runeforge
         if options[:dry_run]
           worker_env = Environment.new(Config.new(Config.deep_merge(env.config.to_h, "dry_run" => { "enabled" => true })), db: env.db)
         end
+        worker_env.check_agent_credentials! if (options[:role].split(",").map(&:strip) & %w[planner coder]).any?
         runner = Worker.new(worker_env, roles: options[:role].split(",").map(&:strip))
         options[:once] ? runner.work_once : run_until_signal(runner)
       end
@@ -296,7 +416,8 @@ module Runeforge
       workers in the background.
     DESC
     option :sandbox, enum: %w[docker podman none], desc: "Container runtime for agents (default docker)"
-    option :adapter, enum: %w[claude_code codex aider command], desc: "Agent CLI (default claude_code)"
+    option :model, desc: "Model for the agents, e.g. claude-sonnet-5-5, gemini-pro-latest, gpt-5, openrouter/qwen/qwen3-coder"
+    option :adapter, enum: %w[ruby_llm claude_code codex aider command], desc: "Agent (default: ruby_llm for API keys, claude_code for a Claude subscription token)"
     option :home, desc: "Where clones, logs and workspaces live (default ~/.runeforge)"
     option :image, desc: "Agent container image (default runeforge/general:latest)"
     option :repo, desc: "Name for --repo-url (default: from the URL)"
@@ -307,6 +428,7 @@ module Runeforge
     option :skip_image, type: :boolean, desc: "Don't build the agent image"
     option :start, type: :boolean, default: true, desc: "Start the supervisor and workers (--no-start to skip)"
     def init
+      warn_stray_config
       setup_options = options.to_h.transform_keys(&:to_sym).except(:config)
       Setup.new(config_path:, options: setup_options).run
     rescue Setup::StepFailed => e
@@ -315,6 +437,7 @@ module Runeforge
 
     desc "up", "Start the supervisor and workers in the background"
     def up
+      guard { env.check_agent_credentials! } if Array(env.config["workers"]).join(",").match?(/planner|coder/)
       guard { daemons.up.each { |s| say "#{s.name.ljust(40)} #{s.state} (pid #{s.pid})" } }
     end
 
@@ -443,6 +566,49 @@ module Runeforge
     no_commands do
       def daemons = Daemons.new(env, config_path:, database: options[:database])
 
+      # The project in `dir`, registered or not: platform verdict (checked now, and as last
+      # recorded by a planner), how it runs and merges, recent tasks, queued plans.
+      def project_status(dir)
+        raise Error, "#{dir} is not a directory" unless File.directory?(dir)
+
+        repo = env.repos.list.find { |row| row[:url].to_s.start_with?("/", "~") && File.expand_path(row[:url]) == dir }
+        project = repo || { name: nil, url: dir }
+        paths, read = Platform.scan_dir(dir)
+        request = repo ? last_request(repo[:name]) : {}
+        text = [request["title"], request["description"], request["context"]].compact.join("\n")
+        need = Platform.detect(paths:, read:, text:, files_only: request["platform_confirmed"] == true)
+        verdict = Platform.verdict(env, project, need)
+        rows = [["Project", "#{dir}#{repo ? " (repo #{repo[:name]})" : ' (not registered with runeforge yet)'}"],
+                ["Builds on", verdict.environment.description],
+                ["Platform", verdict.status == "compatible" && verdict.platform.nil? ? "portable (no platform toolchain needed)" : verdict.reason],
+                ["Status", verdict.status]]
+        rows << ["To fix", verdict.fix] if verdict.fix
+        if repo&.dig(:platform_status)
+          rows << ["Last check", "#{repo[:platform_status]} (planner, #{ago(repo[:platform_checked_at])}): #{repo[:platform_note]}"]
+        end
+        if repo
+          rows << ["Runs with", repo[:run_command].to_s.empty? ? "-" : repo[:run_command]]
+          rows << ["Merging", env.manual_merge?(repo[:name]) ? "manual (left for a person)" : "automatic (#{env.merge_method(repo[:name])})"]
+        end
+        print_table(rows)
+        return unless repo
+
+        tasks = env.db[:runeforge_tasks].where(repo: repo[:name]).order(Sequel.desc(:created_at)).limit(8).all
+        say "\nRecent tasks#{tasks.empty? ? ': none' : ''}"
+        print_table(tasks.map { |t| ["  #{t[:id]}", t[:status], ago(t[:updated_at]), (t[:error] || t[:title]).to_s[0, 70]] }) if tasks.any?
+        plans = Inbox.new(env).queue(repo[:name]).select { |p| Inbox::ACTIVE.include?(p[:status]) }
+        say "\nInbox: #{plans.empty? ? 'nothing queued' : plans.map { |p| "#{p[:name]} (#{p[:status]})" }.join(', ')}"
+      end
+
+      # What the repo's latest task asked for (its task.created input), which tells the platform
+      # apart while the project's files don't yet (an iOS app before its Xcode project exists).
+      def last_request(repo_name)
+        task_id = env.db[:runeforge_tasks].where(repo: repo_name).order(Sequel.desc(:created_at)).get(:id)
+        row = task_id && env.db[:runeforge_messages].where(task_id:, type: "task.created").first
+        payload = row && Message.from_row(row).payload
+        payload.is_a?(Hash) ? payload : {}
+      end
+
       def serve(env, host, port, page: :dashboard)
         require "rackup"
         require "rack/handler/puma"
@@ -489,7 +655,9 @@ module Runeforge
         detail =
           case msg.type
           when "test.result" then msg.payload["passed"] ? "passed" : "failed"
-          when "review.verdict" then msg.payload["approved"] ? "approved" : "rejected: #{Array(msg.payload['reasons']).join('; ')}"
+          when "review.verdict"
+            verdict = msg.payload["approved"] ? "approved" : "rejected: #{Array(msg.payload['reasons']).join('; ')}"
+            [verdict, *Array(msg.payload["notes"]).map { |note| "(note: #{note})" }].join(" ")
           when "code.failed", "plan.failed", "integrate.failed" then msg.payload["reason"].to_s[0, 80]
           when "integrate.done" then msg.payload["pr_url"].to_s
           when "deps.check" then Array(msg.payload["tools"]).join(", ")

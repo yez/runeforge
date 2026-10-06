@@ -30,7 +30,7 @@ RSpec.describe Runeforge::Implode do
   # Never let a spec see (or delete) the real ./runeforge.yml, ~/.runeforge/runeforge.yml or ~/.runeforge.
   before do
     stub_const("Runeforge::Config::GLOBAL_PATH", config_path)
-    stub_const("Runeforge::Config::DEFAULT_PATH", File.join(tmpdir, "cwd-runeforge.yml"))
+    stub_const("Runeforge::Config::LEGACY_PATH", File.join(tmpdir, "cwd-runeforge.yml"))
     stub_const("Runeforge::Config::DEFAULTS", Runeforge::Config::DEFAULTS.merge("home" => File.join(tmpdir, "default-home")).freeze)
   end
 

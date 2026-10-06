@@ -40,6 +40,26 @@ RSpec.describe Runeforge::CLI do
     expect { cli("logs", "T-1", "--message", tester.id.to_s) }.not_to raise_error
   end
 
+  it "shows a project's platform verdict, setup and recent tasks with -d DIR" do
+    dir = File.join(tmpdir, "ios-app")
+    FileUtils.mkdir_p(File.join(dir, "WordReel.xcodeproj"))
+    File.write(File.join(dir, "WordReel.xcodeproj", "project.pbxproj"), "{}\n")
+    sh!("git", "init", "-q", "-b", "main", dir:)
+    sh!("git", "add", ".", dir:)
+    sh!("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init", dir:)
+    env.repos.add(name: "ios", url: dir, test_command: "swift test")
+    env.repos.update("ios", platform: "apple", platform_status: "incompatible", platform_note: "needs Xcode",
+                            platform_checked_at: Runeforge.now)
+    output = cli("status", "-d", dir)
+    expect(output).to include("#{dir} (repo ios)", "Status", "incompatible", "WordReel.xcodeproj is an Xcode project",
+                              "To fix", "Last check", "needs Xcode", "Merging", "Recent tasks: none", "Inbox: nothing queued")
+    expect(cli("-d", dir, "status")).to eq(output)
+  end
+
+  it "shows a portable, unregistered directory and the demo repo's tasks" do
+    expect(cli("status", "-d", tmpdir)).to include("not registered with runeforge yet", "portable", "compatible")
+  end
+
   it "prints its version" do
     expect(cli("version")).to eq("runeforge #{Runeforge::VERSION}\n")
   end
@@ -68,9 +88,39 @@ RSpec.describe Runeforge::CLI, ".start" do
     expect(err).to include('unknown command "demoo". Did you mean "demo"?', "runeforge build demoo")
   end
 
+  it "reads -d DIR before a command as that command's option, and before a prompt as build's" do
+    expect(described_class.dir_first(%w[-d /src status])).to eq(%w[status -d /src])
+    expect(described_class.dir_first(%w[--dir=/src status T-1])).to eq(%w[status --dir=/src T-1])
+    expect(described_class.dir_first(["-d", "/src", "Add a greeting"])).to eq(["build", "-d", "/src", "Add a greeting"])
+    expect(described_class.dir_first(%w[status -d /src])).to eq(%w[status -d /src])
+  end
+
   it "refuses a word with no close command" do
     status, err = start("zzzzzz", "-d", "/tmp")
     expect(status).to eq(1)
     expect(err).not_to include("Did you mean")
+  end
+end
+
+RSpec.describe Runeforge::RepoCommand do
+  let(:backend) { "sqlite" }
+  let(:env) { build_env.tap { |e| add_repo(e) } }
+
+  def cli(*args)
+    out = StringIO.new
+    original = $stdout
+    $stdout = out
+    Runeforge::CLI.start([*args, "--database", "sqlite://#{File.join(tmpdir, 'test.db')}"])
+    out.string
+  ensure
+    $stdout = original
+  end
+
+  it "sets a repository's run command and whether its README must say it" do
+    env
+    expect(cli("repo", "set", "demo", "--run-command", "foreman start -f Procfile.dev")).to include("run foreman start -f Procfile.dev")
+    expect(env.repos.fetch("demo")).to include(run_command: "foreman start -f Procfile.dev", run_docs_required: false)
+    expect(cli("repo", "set", "demo", "--require-run-docs")).to include("(README must say it)")
+    expect(cli("repo", "list")).to include("RUN", "foreman start -f Procfile.dev")
   end
 end

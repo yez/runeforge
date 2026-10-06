@@ -112,9 +112,9 @@
   .tasks { height: 100%; overflow: auto; font-size: 12.5px; }
   .tasks h2 { margin: 0 0 4px; color: var(--gold); font: 700 15px var(--fantasy); }
   .tasks, .out { scrollbar-width: thin; scrollbar-color: #6b5130 transparent; }
-  .task { display: grid; grid-template-columns: 82px minmax(0, 1fr) 96px; gap: 8px; align-items: center; padding: 2px 4px; border-radius: 3px; cursor: pointer; width: 100%; background: none; border: 0; text-align: left; }
+  .task { display: grid; grid-template-columns: minmax(82px, 200px) minmax(0, 1fr) 96px; gap: 8px; align-items: center; padding: 2px 4px; border-radius: 3px; cursor: pointer; width: 100%; background: none; border: 0; text-align: left; }
   .task:hover { background: rgba(255, 220, 150, .08); }
-  .task .id { color: var(--gold); font-family: var(--fantasy); font-size: 12px; }
+  .task .id { color: var(--gold); font-family: var(--fantasy); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .task .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #e2d6bb; }
   .bar { display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; }
   .bar i { height: 6px; background: #3a2d22; border-radius: 1px; }
@@ -488,6 +488,14 @@
         m.state = "claimed"; m.claimed_by = e.actor;
         state.messages.set(e.message_id, m);
         if (d.role === "supervisor") { state.hallPulse = 1; break; }
+        // A worker this page hasn't heard announce itself (it started before the page did, or an
+        // older Runeforge) gets its orc now.
+        if (!state.units.has(unitKey(e.actor, d.role)) && SITES[d.role]) {
+          const known = state.workers.get(e.actor) || { id: e.actor, roles: [] };
+          if (!known.roles.includes(d.role)) known.roles = [...known.roles, d.role];
+          state.workers.set(e.actor, known);
+          ensureUnits(known);
+        }
         const u = state.units.get(unitKey(e.actor, d.role));
         if (u) startJob(u, m, Date.parse(e.at));
         break;

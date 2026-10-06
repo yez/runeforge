@@ -1,41 +1,68 @@
-# Copy to runeforge.yml. Secrets come from environment variables, never from this file.
+# Example Runeforge settings, safe to copy as is: every value is a working default except the
+# model. Copy to ~/.runeforge/runeforge.yml (`runeforge config edit` opens it), or point at
+# another file with -c PATH or RUNEFORGE_CONFIG. Secrets are read from environment variables,
+# never from this file.
 
-database: sqlite://runeforge.db        # or postgres://user@host/runeforge for workers on several hosts
+# database: postgres://user@host/runeforge   # default: SQLite at <home>/runeforge.db; PostgreSQL for workers on several hosts
 home: ~/.runeforge                     # host clones, logs and per-attempt workspaces
 
-lease_seconds: 300
+lease_seconds: 300                     # a claimed job is requeued if its worker goes quiet this long
 heartbeat_seconds: 30
 poll_seconds: 2
-max_deliveries: 3
+max_deliveries: 3                      # a job that fails this many times blocks its task
+keep_workspaces: false                 # true: keep each attempt's workspace for debugging
 
 budgets:
-  max_attempts: 5
-  token_budget: 2000000                # per task, across every planner and coder run
+  max_attempts: 5                      # coding attempts per task
+  token_budget: null                   # tokens per task across all agent runs; null = no limit
   max_task_minutes: 240
 
 sandbox:
-  mode: docker                         # docker | podman | none (trusted local use only)
-  image: runeforge/general:latest        # per-repo images can be set with `runeforge repo add --image`
-  network: bridge                      # use a network with egress rules to restrict outbound traffic
+  mode: docker                         # docker | podman | none (agents run on this machine and may run any command as you)
+  image: runeforge/general:latest      # rebuild after upgrading: docker build -t runeforge/general:latest -f docker/Dockerfile.general docker
+  network: bridge
   cpus: 2
   memory: 4g
   pids: 512
   timeout_seconds: 1800
 
 agent:
-  adapter: claude_code                 # claude_code | codex | aider | command
-  model: null
-  key_env: RUNEFORGE_LLM_API_KEY       # host variable with a separate, spend-limited key
+  # The model, as "name" or "provider/name": claude-sonnet-5-5, gemini-pro-latest, gpt-5.6,
+  # deepseek-v4-pro, openrouter/<model>, ... With an API key every provider runs on Runeforge's
+  # ruby_llm agent; with only a Claude subscription token, Claude models run on Claude Code.
+  model: claude-sonnet-5-5
+  # provider: openai                   # inferred from the model
+  # api_base: https://api.together.xyz/v1   # an OpenAI-compatible service, with provider: openai
+  # adapter: claude_code               # force a CLI: claude_code | codex | aider | command
+  key_env: RUNEFORGE_LLM_API_KEY       # host variable with the default model's API key; each provider's
+                                       # key can also be RUNEFORGE_<PROVIDER>_API_KEY (e.g. RUNEFORGE_ANTHROPIC_API_KEY)
+  oauth_token_env: CLAUDE_CODE_OAUTH_TOKEN   # a Claude subscription token from `claude setup-token`
+  max_tool_calls: 200                  # stop a ruby_llm agent run after this many tool calls
+  # pricing: { input_per_mtok: 0, output_per_mtok: 0 }   # dollars per million tokens, for models ruby_llm
+  #                                    # can't price; it has no prices for claude-sonnet-5-5 yet
+  roles: {}                            # a different model per role, e.g.:
+  # roles:
+  #   planner:
+  #     model: gemini-pro-latest       # key from RUNEFORGE_GEMINI_API_KEY
 
-manual_merge: false                    # true: leave branches and pull requests for a person to merge
+manual_merge: false                    # the default: true leaves branches and pull requests for a person to merge
 merge_method: merge                    # GitHub only: merge | squash | rebase
+
+# Per-project overrides of manual_merge and merge_method. Name a project by its directory, its
+# registered repo name (`runeforge repo list`) or its git URL:
+projects: {}
+# projects:
+#   ~/code/payments:                   # a local project: review everything by hand
+#     manual_merge: true
+#   git@github.com:acme/api.git:       # a GitHub repo: merge automatically, squashed
+#     merge_method: squash
 
 inbox:
   enabled: true                        # build plans committed to each project's runeforge/inbox/
   poll_seconds: 60
 
 dry_run:
-  enabled: false                       # true: agents sleep through canned steps instead of calling an LLM
+  enabled: false                       # true: agents sleep through canned steps instead of calling a model
   min_seconds: 5
   max_seconds: 10
   failure_rate: 0.15
@@ -43,14 +70,33 @@ dry_run:
 events:
   retention_hours: 24                  # dashboard events; the tables keep the full history
 
+limits:
+  max_patch_bytes: 2000000
+  max_files_changed: 200
+  max_spec_bytes: 65536
+  max_output_bytes: 1000000
+  feedback_bytes: 4000
+
+git:
+  author_name: Runeforge
+  author_email: runeforge@localhost
+
 github:
-  token_env: GITHUB_TOKEN
+  token_env: GITHUB_TOKEN              # needed to open and merge pull requests on GitHub
+  api_url: https://api.github.com
 
 jira:
-  url: https://example.atlassian.net
+  url: null                            # e.g. https://yourcompany.atlassian.net, to take tickets from JIRA
   email_env: JIRA_EMAIL
   token_env: JIRA_API_TOKEN
   webhook_secret_env: RUNEFORGE_WEBHOOK_SECRET
   trigger_label: runeforge
-  project_repos:
-    DEV: api
+  project_repos: {}                    # JIRA project key => registered repo name, e.g. { DEV: api }
+  default_repo: null
+
+workflow_paths: []
+
+# Background processes started by `runeforge up`: one supervisor plus one worker per entry.
+workers:
+  - planner,coder
+  - tester,reviewer,integrator

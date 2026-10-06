@@ -26,9 +26,17 @@ module Runeforge
     end
 
     # Returns true when every step finished.
+    # Above this many steps, a foreground build asks before starting (a misread plan file can
+    # turn every bullet into a step).
+    CONFIRM_STEPS = 10
+
     def run
+      project = @dir ? { name: nil, url: File.expand_path(@dir) } : nil
+      confirm_steps!
+      platform_check!(project)
+      @env.check_agent_credentials!(project:)
       directory, created = resolve_directory
-      Setup.new(config_path: Config::DEFAULT_PATH, out: @out).prepare(@env)
+      Setup.new(config_path: Config.locate, out: @out).prepare(@env)
       repo = @registered = register(directory)
       branch = unique_branch(directory, repo)
       @out.puts "\nBuilding \"#{@input.title}\" in #{directory} on branch #{branch} (#{plural(@input.steps.size, 'step')})"
@@ -41,6 +49,36 @@ module Runeforge
     end
 
     private
+
+    # --- before starting ----------------------------------------------------------------------
+
+    def confirm_steps!
+      return unless @input.multi_step?
+
+      @out.puts "#{@input.steps.size} steps:"
+      @input.steps.each_with_index { |step, index| @out.puts format("  %2d. %s", index + 1, step.title) }
+      return if @input.steps.size <= CONFIRM_STEPS
+
+      answer = ask("Build all #{@input.steps.size} steps? [y/N]: ")
+      raise Error, "stopped before building; nothing was changed" unless answer.casecmp?("y")
+    end
+
+    # A platform-specific app (iOS, macOS, Android) needs its vendor's toolchain where it's built
+    # (see Platform). Explain before any tokens are spent; continuing tells the planner the
+    # person accepted the request's wording (its project files are still checked).
+    def platform_check!(project)
+      return if @env.dry_run?
+
+      paths, read = Platform.scan_dir(project && project[:url])
+      verdict = Platform.verdict(@env, project, Platform.detect(paths:, read:, text: @input.text))
+      return unless verdict.incompatible?
+
+      @out.puts "This looks like #{verdict.reason}.\nTo fix: #{verdict.fix}."
+      answer = ask("Continue anyway? [y/N]: ")
+      raise Error, "stopped before building: #{verdict.fix}" unless answer.casecmp?("y")
+
+      @platform_confirmed = true
+    end
 
     # --- directory ---------------------------------------------------------------------------
 
@@ -157,7 +195,8 @@ module Runeforge
           id: multi ? "#{run_id}-s#{index + 1}" : run_id, workflow: "build", repo:, base_sha: base, branch: step_branch, lane:,
           locked_paths: locked, title: step.title, mailbox: @env.mailbox("cli"),
           input: { "title" => step.title, "description" => step.body,
-                   "context" => (multi ? @input.text : nil), "step" => "#{index + 1} of #{@input.steps.size}" }.compact,
+                   "context" => (multi ? @input.text : nil), "step" => "#{index + 1} of #{@input.steps.size}",
+                   "platform_confirmed" => @platform_confirmed }.compact,
           max_attempts: budgets["max_attempts"], token_budget: budgets["token_budget"],
           deadline_at: budgets["max_task_minutes"] && (Runeforge.now + (budgets["max_task_minutes"] * 60))
         )
@@ -233,7 +272,9 @@ module Runeforge
       when "test.request" then "· testing #{sha}"
       when "test.result" then payload["passed"] ? "✓ tests passed" : "✗ #{payload['reason'] || 'tests failed'}"
       when "review.request" then "· checking locked tests"
-      when "review.verdict" then payload["approved"] ? "✓ locked tests untouched" : "✗ #{Array(payload['reasons']).join('; ')}"
+      when "review.verdict"
+        verdict = payload["approved"] ? "✓ locked tests untouched" : "✗ #{Array(payload['reasons']).join('; ')}"
+        [verdict, *Array(payload["notes"]).map { |note| "  note: #{note}" }].join("\n  ")
       when "integrate.request" then merging? ? "· merging" : "· updating the branch"
       when "integrate.done"
         line = payload["merged"] ? "✓ merged into #{payload['base']}" : "✓ branch #{payload['branch']} updated"
@@ -250,6 +291,7 @@ module Runeforge
         if @unmerged.empty?
           @out.puts "\nDone. The work is merged into #{base} in #{directory}:"
           @out.puts "  git -C #{directory} log --oneline --first-parent -#{@input.steps.size} #{base}"
+          run_hint(directory)
         else
           @out.puts "\nDone, but not everything was merged; see the warnings above. Unmerged work is on:"
           @unmerged.each { |b| @out.puts "  #{b}" }
@@ -263,6 +305,7 @@ module Runeforge
           @out.puts "  git -C #{directory} log --oneline #{current_branch(directory)}..#{branch}"
           @out.puts "  git -C #{directory} switch #{branch}"
         end
+        run_hint(directory)
       else
         @out.puts "\nStopped: #{task ? "#{task[:status]}. #{task[:error]}" : 'no task ran'}"
         @out.puts "Finished steps are on branch #{branch}." if Git.run("rev-parse", "--verify", "--quiet", "refs/heads/#{branch}", dir: directory, allow_failure: true)
@@ -280,9 +323,21 @@ module Runeforge
       answer.strip
     end
 
+    # How to run what was built, as the planner recorded it (see the project's README).
+    def run_hint(directory)
+      repo = @env.repos.fetch(@registered)
+      return if repo[:run_command].to_s.strip.empty?
+
+      setup = repo[:setup_command].to_s.strip
+      @out.puts "\nRun it:"
+      @out.puts "  cd #{directory}"
+      @out.puts "  #{setup}" unless setup.empty?
+      @out.puts "  #{repo[:run_command]}"
+    end
+
     def git(*args, dir:, env: {}) = Git.run(*args, dir:, env:)
 
-    def merging? = !@env.config["manual_merge"]
+    def merging? = !@env.manual_merge?(@registered)
 
     def plural(count, word) = "#{count} #{word}#{'s' unless count == 1}"
   end

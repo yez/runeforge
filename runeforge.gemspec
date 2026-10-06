@@ -24,6 +24,7 @@ Gem::Specification.new do |spec|
 
   spec.add_dependency "puma", ">= 6.4"
   spec.add_dependency "rack", ">= 3.0"
+  spec.add_dependency "ruby_llm", "~> 2.0"
   spec.add_dependency "rackup", "~> 2.1"
   spec.add_dependency "sequel", "~> 5.0"
   spec.add_dependency "sqlite3", ">= 1.7"

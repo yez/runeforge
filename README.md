@@ -51,8 +51,15 @@ runeforge plan.md -d ~/code/my-app                              # iterate on an 
   items (`- [x]`) are skipped, and the rest of the file is passed along as context. A file
   without at least two list items, or a prompt, is one step. A failed step stops the run.
 - **Each step:** the planner writes a spec, acceptance tests (which become locked) and any
-  scaffolding needed to run them, and says in `.runeforge/project.json` how to run the tests
-  and which tools they need. The coder then works until the tests pass (up to `max_attempts`).
+  scaffolding needed to run them, and says in `.runeforge/project.json` how to run the tests,
+  how to run the project (`run_command`) and which tools they need. The coder then works until
+  the tests pass (up to `max_attempts`).
+- **Runnable results:** an existing project keeps its own launch method; Runeforge records it
+  and changes nothing about it. A new project gets a README with a How to run section (npm
+  projects an `npm start` script), and the reviewer rejects work whose docs don't contain the
+  command Runeforge defined. `runeforge build` ends by printing it, and `runeforge repo set NAME
+  --run-command ...` changes it. The conventions for common web and mobile stacks are in
+  [docs/run-conventions.md](docs/run-conventions.md).
 - **Missing tools:** agents run in the general-purpose image `runeforge/general:latest`
   (Python, Node, Ruby, Go, build tools, git, Claude Code). When a step needs something else,
   Runeforge asks which apt packages to add and builds a per-project image on top of it. With
@@ -60,9 +67,10 @@ runeforge plan.md -d ~/code/my-app                              # iterate on an 
 - It runs in the foreground and prints each step as it happens. Ctrl-C stops it and discards
   the step in progress; finished steps stay merged (or on the branch, with `manual_merge`).
 
-Configuration and data live in `~/.runeforge/` (`runeforge.yml`, the SQLite database, clones,
-logs), unless there is a `runeforge.yml` in the current directory or you pass `-c`. `-db URL`
-(or `--database URL`) points at a different database.
+Configuration and data live in `~/.runeforge/`: settings in `~/.runeforge/runeforge.yml`, plus
+the SQLite database, clones, logs and workspaces. The directory you run `runeforge` from doesn't
+change its settings. `-c PATH` (or `RUNEFORGE_CONFIG=PATH`) reads another config file, and
+`-db URL` (or `--database URL`) points at a different database.
 
 ## Setup and background mode
 
@@ -75,7 +83,7 @@ bin/setup                                   # = bundle install + runeforge init
 With the gem installed, `runeforge init` does the same setup. Each step checks what is already
 in place, so it is safe to run again:
 
-1. Writes `runeforge.yml` (unless it exists) from flags such as `--database`, `--sandbox`, `--adapter`.
+1. Writes `~/.runeforge/runeforge.yml` (unless it exists) from flags such as `--database`, `--sandbox`, `--model`.
 2. Checks git, and for a PostgreSQL URL starts the server via Homebrew when needed and creates the database.
 3. Runs migrations.
 4. Starts Docker Desktop (macOS), the Podman machine, or `systemctl start docker` when the sandbox needs it.
@@ -103,11 +111,57 @@ Environment variables used on the host: `RUNEFORGE_LLM_API_KEY` (a separate, spe
 the only secret that enters a container), `GITHUB_TOKEN`, `JIRA_EMAIL`, `JIRA_API_TOKEN`,
 `RUNEFORGE_WEBHOOK_SECRET`. Git pushes use the host's normal git credentials.
 
+**Models and API keys:** set the model in `runeforge.yml`. With an API key, any provider runs
+on Runeforge's own agent, built on the [ruby_llm](https://rubyllm.com) gem
+(`lib/runeforge/agent_runner.rb`). It runs in the sandbox with tools to list, read, search,
+write and edit files and to run commands in the workspace. Each role can use its own model:
+
+```yaml
+agent:
+  model: claude-sonnet-5-5          # the default for every role
+  roles:
+    planner: { model: gemini-pro-latest }
+```
+
+| Model (examples) | Provider | Key (host variable) |
+|---|---|---|
+| `claude-sonnet-5-5`, `claude-opus-5` | anthropic | `RUNEFORGE_ANTHROPIC_API_KEY` |
+| `gemini-pro-latest`, `gemini-flash-latest` | gemini | `RUNEFORGE_GEMINI_API_KEY` |
+| `gpt-5.6`, `o3` | openai | `RUNEFORGE_OPENAI_API_KEY` |
+| `deepseek-chat`, `grok-4`, `codestral-latest`, `sonar-pro` | deepseek, xai, mistral, perplexity | `RUNEFORGE_<PROVIDER>_API_KEY` |
+| `openrouter/<model>` | openrouter | `RUNEFORGE_OPENROUTER_API_KEY` |
+| any OpenAI-compatible service (Together, Groq, a local server) | `provider: openai` plus `api_base:` | the role's `key_env` |
+
+`RUNEFORGE_LLM_API_KEY` also works for the default model's provider (never for another
+provider's model). A role's own `key_env` comes first. Models ruby_llm can't price can be given
+`pricing` (dollars per million tokens) so budgets still work, and `max_tool_calls` (200) stops
+a run that never finishes. Runeforge stops before starting if a role's agent has no key.
+
+`adapter: claude_code` (or `codex`, `aider`, `command`) runs that CLI instead. Claude models use
+Claude Code automatically when the only credential is a Claude subscription token (below).
+
+The agent image (`docker/Dockerfile.general`, Ruby 3.3 with ruby_llm, Node 22, Claude Code)
+must be rebuilt after upgrading Runeforge:
+`docker build -t runeforge/general:latest -f docker/Dockerfile.general docker`.
+
+**Using a Claude subscription instead of an API key:** your normal Claude Code login lives on
+your machine, so agents in a container can't see it. Create a long-lived token for them:
+
+```sh
+claude setup-token                          # opens a browser; prints the token
+export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...   # add to your shell profile
+```
+
+With no `RUNEFORGE_LLM_API_KEY` set, Runeforge passes that token into the container (the
+variable is `agent.oauth_token_env`). An API key wins when both are set. `runeforge build`,
+`worker` and `up` stop before starting if a sandboxed agent has neither.
+
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `runeforge status TASK` | Task header plus every message, with heartbeat age for claimed work |
+| `runeforge -d DIR status` | The project in DIR: whether it can be built here (see Platform apps), how it runs and merges, recent tasks, queued plans |
 | `runeforge watch TASK` | Follows new messages until the task finishes |
 | `runeforge tasks [--status S]` | Lists tasks |
 | `runeforge workers` | Live workers, their current message and sandbox |
@@ -119,6 +173,9 @@ the only secret that enters a container), `GITHUB_TOKEN`, `JIRA_EMAIL`, `JIRA_AP
 | `runeforge webhook` | Serves `POST /webhooks/jira?token=…` for issues labelled `runeforge` |
 | `runeforge dashboard [--port 9393]` | Serves the live dashboard (see below) |
 | `runeforge warcamp [--port 9393]` | The same live view, drawn as an orc war camp |
+| `runeforge repo set NAME [--run-command CMD] [--test-command CMD] [--require-run-docs]` | Change how a repository is tested and run |
+| `runeforge config edit` | Opens `~/.runeforge/runeforge.yml` in `$VISUAL`/`$EDITOR` (creating it if needed), then checks it |
+| `runeforge config path` / `config show` | The config file in use / the settings in effect, defaults included |
 | `runeforge inbox [REPO] [--poll] [--all]` | The plans queued from each project's `runeforge/inbox/` |
 | `runeforge demo` | Dry-run agents forever, plus the dashboard; no LLM, git or network |
 | `runeforge worker --role R --dry-run` | A worker whose agents only go through the motions |
@@ -255,8 +312,30 @@ By default every task is merged once it passes:
   when it has no uncommitted changes. Merged branches are deleted.
 
 A task that wasn't merged is still `done`; `runeforge status TASK` shows the warning and its
-`merged_sha` stays empty. With `manual_merge: true` in `runeforge.yml`, Runeforge stops after
+`merged_sha` stays empty. `manual_merge` and `merge_method` can be set per project under
+`projects:` in `runeforge.yml`, keyed by the project's directory, registered repo name or git
+URL (`projects: { ~/code/payments: { manual_merge: true } }`). With `manual_merge: true`, Runeforge stops after
 pushing the branch and opening the pull request, as it used to.
+
+## Platform apps
+
+Agents and tests run in a Linux container, which can't build iOS, macOS or Android apps: those
+need Xcode on a Mac, or the Android SDK. Runeforge recognizes them from the project's files
+(`*.xcodeproj`, an Apple-platform `Package.swift`, a `Podfile`, `AndroidManifest.xml`) or the
+request ("iOS", "SwiftUI", "Android app", ...), and checks where they would be built:
+
+- `runeforge build` explains and asks before starting.
+- The planner checks again before its agent runs. An incompatible project fails planning with
+  the fix instead of being rewritten in a language the sandbox has.
+- The verdict is recorded on the repository; `runeforge -d DIR status` shows it alongside a
+  fresh check.
+
+To build an Apple app, run it on a Mac with the full Xcode app (not only the Command Line Tools)
+and turn the sandbox off for that project: `projects: { ~/code/wordreel: { sandbox: none } }`.
+Without a sandbox the agents run on your machine with full permissions (Claude Code with
+`--dangerously-skip-permissions`, Codex without its own sandbox), so they can build, test and run
+the simulator, and could run any other command as you. Use it only for projects you'd trust an
+agent with.
 
 ## Embedding
 
@@ -289,5 +368,5 @@ Container isolation specs run only when a Docker daemon is available.
 
 - Restricting container egress to the LLM API and package registries is left to the Docker
   network you configure (`sandbox.network`); Runeforge doesn't filter traffic itself.
-- The LLM key is passed into the container by name. A proxy that keeps it out entirely is planned.
+- The LLM key (or subscription token) is passed into the container by name. A proxy that keeps it out entirely is planned.
 - Parallel best-of-N attempts and OpenTelemetry are not built yet.

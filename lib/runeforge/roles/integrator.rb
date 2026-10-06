@@ -29,11 +29,11 @@ module Runeforge
 
       # Returns the base branch commit that took in the work, or nil when it wasn't merged.
       def merge(sha, warnings)
-        return nil if env.config["manual_merge"]
+        return nil if env.manual_merge?(task[:repo])
         return task[:merged_sha] if task[:merged_sha]
 
         if Integrations::GitHub.slug(repo[:url])
-          env.github.merge_pull(repo_url: repo[:url], head: task[:branch], sha:, method: env.config["merge_method"],
+          env.github.merge_pull(repo_url: repo[:url], head: task[:branch], sha:, method: env.merge_method(task[:repo]),
                                 title: pull_title)
         else
           merged = env.repos.merge(task[:repo], sha:, message: merge_message, identity:)

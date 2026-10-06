@@ -21,7 +21,7 @@ module Runeforge
       # never belong in a patch, whatever the project's .gitignore says.
       PATCH_EXCLUDES = %w[
         .runeforge/ node_modules/ .venv/ venv/ __pycache__/ *.pyc .pytest_cache/ .mypy_cache/ .ruff_cache/
-        .tox/ vendor/bundle/ .bundle/ target/ .gradle/ .next/ .nuxt/ .turbo/ .cache/ coverage/
+        .tox/ vendor/bundle/ .bundle/ target/ .gradle/ .next/ .nuxt/ .turbo/ .cache/ coverage/ .aider*
       ].freeze
 
       # Shell run inside the sandbox around the agent CLI. It snapshots the exported tree in a
@@ -78,26 +78,38 @@ module Runeforge
         workspace&.cleanup! unless env.config["keep_workspaces"]
       end
 
-      AgentRun = Data.define(:result, :output, :usage, :log_path)
+      # This role's name and its agent CLI (see Environment#agent).
+      def role = Runeforge.role_of(msg.recipient)
+
+      def agent = env.agent(role, project: repo)
+
+      AgentRun = Data.define(:result, :output, :errors, :usage, :log_path)
 
       def run_agent(workspace, prompt)
         workspace.write_meta("prompt.md", prompt)
-        script = format(AGENT_SCRIPT, command: env.adapter.command)
+        agent.adapter.files.each { |name, content| workspace.write_meta(name, content) }
+        script = format(AGENT_SCRIPT, command: agent.adapter.command)
         # The agent's output goes to files in the workspace; follow them while it runs.
         files = { "stdout" => File.join(workspace.meta_dir, "agent.out"), "stderr" => File.join(workspace.meta_dir, "agent.err") }
-        run = output.follow(files) { sandbox.run(workdir: workspace.path, script:, env: env.agent_key_env) }
+        run = output.follow(files) { sandbox.run(workdir: workspace.path, script:, env: env.agent_key_env(role, project: repo).merge(agent.adapter.run_env)) }
         output = workspace.read_meta("agent.out", max_bytes: limits["max_output_bytes"]).to_s
         errors = workspace.read_meta("agent.err", max_bytes: limits["max_output_bytes"]).to_s
         log = write_log(self.class.name.split("::").last.downcase,
                         [output, errors, run.stdout, run.stderr].reject(&:empty?).join("\n"))
-        AgentRun.new(result: run, output:, usage: env.adapter.parse_usage(output), log_path: log)
+        AgentRun.new(result: run, output:, errors:, usage: agent.usage(output), log_path: log)
       end
 
+      # Nil when the agent ran cleanly. Otherwise the CLI's own explanation (Claude Code reports
+      # errors such as "Not logged in" in its JSON output), else the end of its stderr.
       def agent_failure(run)
         return "agent timed out" if run.result.timed_out
-        return nil if run.result.exit_code.zero?
 
-        "agent exited with status #{run.result.exit_code}: #{tail(run.result.stderr, 500)}"
+        detail = agent.adapter.failure_detail(run.output, run.errors)
+        return nil if run.result.exit_code.zero? && detail.nil?
+
+        detail ||= tail([run.errors, run.result.stderr].reject(&:empty?).join("\n").strip, 500)
+        hint = detail.match?(/log ?in|authenticat|401|api.?key|oauth|permission denied/i) ? " (#{env.missing_credentials_message(role, project: repo).lines.drop(1).map(&:strip).join('; ')})" : ""
+        "agent #{run.result.exit_code.zero? ? 'reported an error' : "exited with status #{run.result.exit_code}"}: #{detail}#{hint}"
       end
 
       def usage_updates(usage)
@@ -105,7 +117,7 @@ module Runeforge
       end
 
       def trailers(extra = {})
-        { "Agent-Task" => task[:id], "Agent-Message" => msg.id }.merge(extra).merge("Agent-Model" => env.adapter.label)
+        { "Agent-Task" => task[:id], "Agent-Message" => msg.id }.merge(extra).merge("Agent-Model" => agent.label)
       end
 
       def write_log(name, text)

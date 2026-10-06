@@ -134,7 +134,8 @@ module Runeforge
     end
 
     def config_actions
-      candidates = [@config_path, File.expand_path(Config::DEFAULT_PATH), Config::GLOBAL_PATH].map { |path| File.expand_path(path) }.uniq
+      # Also a ./runeforge.yml an older `runeforge init` wrote into the directory it was run from.
+      candidates = [@config_path, File.expand_path(Config::LEGACY_PATH), Config::GLOBAL_PATH].map { |path| File.expand_path(path) }.uniq
       candidates.select { |path| File.exist?(path) }.flat_map do |path|
         if init_config?(path)
           [Action.new(description: "delete #{path}", run: -> { FileUtils.rm_f(path) }), *legacy_database_action(path)]

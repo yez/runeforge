@@ -1,29 +1,42 @@
-# General-purpose agent image: common language toolchains plus git and the Claude Code CLI.
+# General-purpose agent image: common language toolchains, git, Runeforge's ruby_llm agent (for
+# API-key models from any provider) and the Claude Code CLI (for Claude subscription tokens).
 # Runeforge builds this as runeforge/general:latest. When a project needs more, Runeforge asks
 # which apt packages to add and builds a per-project image on top of this one.
-FROM debian:bookworm-slim
+FROM ruby:3.3-slim-bookworm
+
+ARG NODE_MAJOR=22
+ARG RUBY_LLM_VERSION="~> 2.0"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
     GOPATH=/tmp/go \
     npm_config_cache=/tmp/.npm
 
+# Node from NodeSource, newer than Debian's, for Claude Code and JavaScript projects.
 RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
+ && curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash - \
  && apt-get install -y --no-install-recommends \
-      ca-certificates curl git build-essential pkg-config \
+      git build-essential pkg-config \
       python3 python3-pip python3-venv \
-      nodejs npm \
-      ruby-full ruby-bundler \
+      nodejs \
       golang \
       sqlite3 jq unzip \
  && rm -rf /var/lib/apt/lists/* \
  && npm install -g @anthropic-ai/claude-code \
+ && npm cache clean --force \
  && ln -sf /usr/bin/python3 /usr/local/bin/python
+
+# Runeforge's agent runs on ruby_llm, kept in its own directory so a project's gems and Bundler
+# settings never mix with it (the agent puts GEM_PATH back for the commands it runs).
+RUN gem install --no-document --install-dir /opt/runeforge/gems ruby_llm -v "$RUBY_LLM_VERSION"
 
 # Runeforge runs containers as the host user's uid with a read-only root filesystem,
 # HOME=/tmp/home and the workspace mounted at /workspace. Package managers that would write to
 # system directories install under /tmp instead.
 ENV GEM_HOME=/tmp/gems \
+    GEM_PATH=/tmp/gems:/usr/local/bundle \
+    BUNDLE_APP_CONFIG=/tmp/bundle \
     NPM_CONFIG_PREFIX=/tmp/npm-global \
     PATH=/tmp/gems/bin:/tmp/npm-global/bin:/tmp/home/.local/bin:/tmp/go/bin:$PATH
 

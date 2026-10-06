@@ -65,7 +65,7 @@ module Runeforge
 
     def plans = env.db[:runeforge_plans]
 
-    def manual? = env.config["manual_merge"] == true
+    def manual?(repo_name) = env.manual_merge?(repo_name)
 
     # Checks every registered repository. Returns the errors, one per repository that failed.
     def poll
@@ -231,7 +231,7 @@ module Runeforge
     end
 
     def step_done(repo, plan, task, base)
-      unless manual? || task[:merged_sha]
+      unless manual?(repo[:name]) || task[:merged_sha]
         update(plan, status: "unmerged", step: plan[:step] + 1, waiting_sha: task[:head_sha],
                      reason: "not merged into #{repo[:base_branch]}; the work is on #{task[:branch]}")
         return block_waiting(repo[:name], "waiting for #{plan[:name]} to be merged")
@@ -317,7 +317,7 @@ module Runeforge
     # Merging: each step gets its own branch off the current base. manual_merge: every plan stacks
     # on one shared branch, which starts over from the base once everything on it has landed.
     def branch_and_base(name, plan, multi, base)
-      unless manual?
+      unless manual?(name)
         suffix = multi ? "-s#{plan[:step] + 1}" : ""
         return ["runeforge/#{Build.slug(plan[:name])}-p#{plan[:id]}#{suffix}", base]
       end
