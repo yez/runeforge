@@ -47,8 +47,10 @@ agent:
 
 manual_merge: false                    # the default: true leaves branches and pull requests for a person to merge
 merge_method: merge                    # GitHub only: merge | squash | rebase
+launch_check: true                     # Apple apps built on this Mac: before merging, run the run command and check the app
+                                       # launches and keeps running on the simulator (opens the simulator window briefly)
 
-# Per-project overrides of manual_merge and merge_method. Name a project by its directory, its
+# Per-project overrides of manual_merge, merge_method, sandbox and launch_check. Name a project by its directory, its
 # registered repo name (`runeforge repo list`) or its git URL:
 projects: {}
 # projects:

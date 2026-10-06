@@ -4,13 +4,14 @@ module Runeforge
   module Prompts
     module_function
 
-    def plan(task:, input:, test_globs:, test_command:, locked_paths: [], environment: nil, feedback: nil)
+    def plan(task:, input:, test_globs:, test_command:, locked_paths: [], environment: nil, feedback: nil, apple: nil)
       sections = ["You are the planning agent for task #{task[:id]}."]
       if environment
         sections << "## Environment\nYou, the coder and the tests all run on #{environment}. Plan only what can be " \
                     "built and tested here; if the request needs a platform toolchain this environment lacks, " \
                     "write that to `.runeforge/blocked.md` (see below) instead of planning around it."
       end
+      sections << apple_section(apple) if apple
       if input["context"]
         sections << "## The whole request (you are doing step #{input['step']})\n#{input['context']}"
         sections << "## This step\n#{[input['title'], input['description']].compact.join("\n\n")}"
@@ -82,6 +83,18 @@ module Runeforge
           doesn't exist yet), not because the command can't find or load them. The output must name
           your test cases: a runner crash reported as a single failing test (for example one "test"
           named after a directory, or `Cannot find module`) means the command is wrong.
+        - Compiled stacks (Swift, Rust, Kotlin/Java, Go, C#) build the whole test target first, so one
+          missing type stops every test and hides every assertion. There, add the smallest stubs of the
+          new types and functions to the source so the suite builds: placeholder bodies that return
+          empty or default values, never ones that crash or trap (`fatalError`, `panic!`, `TODO()`).
+          Then the locked tests must pass and each new test must fail on its own assertion. Runeforge
+          rejects a plan whose tests don't compile.
+        - Work through every assertion that depends on behaviour that already exists (and that the
+          locked tests pin down) by hand against the current code: follow the inputs through each
+          call and check that the expected value is what that code produces. Another agent can't
+          change your tests, so one assertion that contradicts a locked test fails the whole step.
+        - Every assertion must be able to fail. Don't compare a value with itself or with an
+          expression that always evaluates to it.
         - Node: `node --test` with no arguments finds test/**/*.test.js (and .mjs, .cjs); or list the
           files, `node --test test/*.test.js`. Never `node --test <directory>`: Node 22 loads the
           directory as a module and runs nothing.
@@ -89,14 +102,14 @@ module Runeforge
           not read or write anything there (spec.md and project.json are for Runeforge only).
 
         ## Rules
-        - Do not implement the step itself. Another agent will, and it cannot change your test files.
+        - Do not implement the step itself (compile-only stubs are fine). Another agent will, and it cannot change your test files.
         - Do not change anything under `runeforge/` (the project's plan inbox); such changes are rejected.
         - Do not commit. Leave your changes in the working tree.
       JOB
       sections.join("\n\n")
     end
 
-    def code(task:, attempt:, locked_paths:, test_command:, feedback: nil, run_command: nil, run_docs_required: false)
+    def code(task:, attempt:, locked_paths:, test_command:, feedback: nil, run_command: nil, run_docs_required: false, apple: nil)
       sections = [<<~PROMPT]
         You are the coding agent for task #{task[:id]}, attempt #{attempt} of #{task[:max_attempts]}.
 
@@ -115,8 +128,35 @@ module Runeforge
         Do not put anything in `.runeforge/`: it's Runeforge's scratch space and is never committed.
         Do not commit. Leave your changes in the working tree.
       PROMPT
+      sections << "#{apple_section(apple)}\n" if apple
       sections << "## Feedback from the previous attempt\n#{feedback}\n" if feedback && !feedback.to_s.strip.empty?
       sections.join("\n")
+    end
+
+    # What agents can't know from memory about this Mac's Apple toolchain (Platform::AppleToolchain).
+    # Xcode 27 dropped Simulator.app for DeviceHub.app, and an agent writing `open -a Simulator`
+    # from habit produced a run script that launched the app with no window.
+    def apple_section(toolchain)
+      window = toolchain.simulator_app
+      simulators = toolchain.runtimes.first(2).map { |version, names| "  - iOS #{version}: #{names.first(8).join(', ')}" }
+      tools = toolchain.tools.any? ? toolchain.tools.join(", ") : "none of #{Platform::APPLE_TOOLS.join(', ')}"
+      <<~SECTION.chomp
+        ## Apple toolchain on this machine
+        - #{toolchain.xcode_version}, developer dir `#{toolchain.developer_dir}`.
+        - #{window ? "Simulators are shown in `#{window}`." : 'No app to show simulators was found (neither Simulator.app nor DeviceHub.app).'}
+          Xcode 27 has no Simulator.app (DeviceHub.app replaced it), so never hard-code `open -a Simulator`.
+          A script that shows the simulator must find the app when it runs: `$(xcode-select -p)/Applications/Simulator.app`
+          (Xcode 26 and earlier; only it takes `--args -CurrentDeviceUDID <udid>`), else
+          `$(xcode-select -p)/../Applications/DeviceHub.app`, and exit non-zero if neither exists.
+        - Simulators available here (use these exact names in `-destination`):
+        #{simulators.any? ? simulators.join("\n") : '  - none: `xcrun simctl list devices available` is empty'}
+        - Command-line tools installed: #{tools}. Don't depend on one that isn't installed.
+        - Build warnings count. Fix Swift concurrency warnings: main-actor APIs (UIKit, including the haptic
+          feedback generators, and SwiftUI state) must be used from `@MainActor` code, not nonisolated types.
+        - A run script must fail (exit non-zero) when it can't build, install, launch or show the app, never warn and
+          carry on. Runeforge runs the project's run command before merging and rejects work whose app doesn't
+          launch and keep running.
+      SECTION
     end
 
     def run_section(run_command, docs_required: false)

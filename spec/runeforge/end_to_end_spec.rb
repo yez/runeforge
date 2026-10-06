@@ -286,7 +286,7 @@ RSpec.describe "Ticket to pull request" do
       expect(env.repos.fetch("demo")).to include(platform: nil, platform_status: "compatible", platform_note: "a portable project")
     end
 
-    it "stops when the coder keeps committing nothing after the tests failed" do
+    it "plans again, then stops, when the coder keeps committing nothing after the tests failed" do
       code = <<~SH
         if [ ! -f #{tmpdir}/first ]; then touch #{tmpdir}/first; mkdir -p lib; echo wrong > lib/greeting.txt; else mkdir -p .runeforge; echo '{}' > .runeforge/project.json; fi
       SH
@@ -294,7 +294,12 @@ RSpec.describe "Ticket to pull request" do
       create(env)
       task = drive(env, "T-1", until_status: "failed")
 
-      expect(task[:attempts]).to eq(3) # one real attempt, then two with nothing to commit
+      # One real attempt and two with nothing to commit; then the planner is asked again with the
+      # coder's report, and two more attempts with nothing to commit end the task.
+      requests = env.tasks.messages("T-1").select { |m| m.type == "plan.request" }
+      expect(requests.map { |m| m.payload["replan"] }).to eq([nil, true])
+      expect(requests.last.payload["feedback"]).to include("The coder couldn't make your acceptance tests pass", "FAIL test/greeting_test.sh")
+      expect(task[:attempts]).to eq(2) # attempts start again for the new plan
       expect(task[:error]).to include("the coder changed nothing on its last 2 attempts after the tests failed",
                                       "FAIL test/greeting_test.sh")
       reasons = env.tasks.messages("T-1").select { |m| m.type == "code.failed" }.map { |m| m.payload["reason"] }

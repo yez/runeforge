@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "digest"
 require "yaml"
 
 module Runeforge
@@ -15,13 +16,24 @@ module Runeforge
   #   max_attempts: 3
   #   ---
   class PlanFile
-    Step = Data.define(:title, :body)
+    Step = Data.define(:title, :body) do
+      # Identifies the step across runs, so a build run again (or resumed) knows which steps an
+      # earlier run finished. Checking a step off, or re-indenting it, keeps its key.
+      def key = PlanFile.step_key(body)
+    end
+
+    def self.step_key(body)
+      normalized = body.to_s.gsub(/\[[ xX]\]\s*/, "").gsub(/\s+/, " ").strip.downcase
+      Digest::SHA256.hexdigest(normalized)[0, 16]
+    end
 
     ITEM = /\A {0,3}(?:[-*+]|\d+[.)])\s+(?:\[([ xX])\]\s+)?(.*)\z/
     FRONT_MATTER = /\A---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\z)/m
     NAME = /\A[A-Za-z0-9][A-Za-z0-9._-]{0,99}\z/
 
-    attr_reader :title, :text, :steps, :meta
+    # checked_steps: the steps already checked off in the text, which don't run but whose tests
+    # stay locked (see BuildProgress).
+    attr_reader :title, :text, :steps, :meta, :checked_steps
 
     # list: false treats the whole text as one step (a prompt typed on the command line).
     def self.parse(text, list: true, source: "plan")
@@ -69,7 +81,7 @@ module Runeforge
     # section under such a heading is one step, bullets included. The heading level with the
     # most step-like headings wins (the deeper one on a tie), so steps inside phases beat the
     # phases. Headings checked off ("### [x] Step 1") are skipped. Nil when fewer than two.
-    def self.heading_steps(text)
+    def self.heading_steps(text, checked: [])
       headings = []
       fence = false
       lines = text.lines(chomp: true)
@@ -85,11 +97,15 @@ module Runeforge
 
       steps = chosen.filter_map do |heading|
         stop = headings.find { |h| h[:index] > heading[:index] && h[:level] <= level }&.dig(:index) || lines.size
-        next if heading[:text].match?(CHECKED_HEADING)
-
         title = heading[:text].sub(CHECKED_HEADING, "").gsub(/[*_`]/, "").strip
         body = lines[heading[:index]...stop].join("\n").strip.sub(/\n+(?:-{3,}|\*{3,}|_{3,})\s*\z/, "")
-        Step.new(title: title[0, 72], body:)
+        step = Step.new(title: title[0, 72], body:)
+        if heading[:text].match?(CHECKED_HEADING)
+          checked << step
+          next
+        end
+
+        step
       end
       raise Error, "every step heading is already checked off" if steps.empty?
 
@@ -98,7 +114,7 @@ module Runeforge
 
     # Top-level list items become steps; indented lines under an item belong to it. Checked
     # items ("- [x] ...") are already done and skipped. Fewer than two items means "one step".
-    def self.list_steps(text)
+    def self.list_steps(text, checked: [])
       items = []
       current = nil
       text.each_line(chomp: true) do |line|
@@ -113,10 +129,12 @@ module Runeforge
       end
       return nil if items.size < 2
 
-      open = items.reject { |item| item[:done] }
+      steps = items.map { |item| [item[:done], Step.new(title: item[:lines].first.strip[0, 72], body: item[:lines].join("\n").strip)] }
+      checked.concat(steps.select(&:first).map(&:last))
+      open = steps.reject(&:first).map(&:last)
       raise Error, "every item in the task list is already checked off" if open.empty?
 
-      open.map { |item| Step.new(title: item[:lines].first.strip[0, 72], body: item[:lines].join("\n").strip) }
+      open
     end
 
     def initialize(text, meta, list:)
@@ -125,7 +143,9 @@ module Runeforge
       heading = text[/^\#{1,6}\s+(.+)$/, 1]
       first_line = text.lines.map(&:strip).find { |line| !line.empty? }
       @title = (meta["title"] || heading || first_line).sub(/\A(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/, "").strip[0, 72]
-      steps = list ? (self.class.heading_steps(text) || self.class.list_steps(text)) : nil
+      checked = []
+      steps = list ? (self.class.heading_steps(text, checked:) || self.class.list_steps(text, checked: checked.clear)) : nil
+      @checked_steps = steps.nil? || steps.empty? ? [] : checked
       @steps = steps.nil? || steps.empty? ? [Step.new(title: @title, body: text.strip)] : steps
     end
 

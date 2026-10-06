@@ -17,6 +17,20 @@ module Runeforge
       [/^running 0 tests$/, "cargo test ran no tests"]
     ].freeze
 
+    # Compiled stacks build the whole test target before running anything, so one missing type
+    # stops every test, the earlier steps' locked ones included. A plan like that hasn't checked a
+    # single assertion; tests that contradict the locked ones then only show up after coding.
+    BUILD_FAILED = [
+      # Not xcodebuild's "** TEST FAILED **": it also ends a run whose tests built and then failed.
+      [/^error: (?:Build failed|fatalError)\b|^\*\* BUILD FAILED \*\*|Testing cancelled because the build failed/,
+       "the Swift test target doesn't compile"],
+      [/^error: could not compile `/, "cargo couldn't compile the tests"],
+      [/^\s*\[build failed\]|^FAIL\s+\S+\s+\[(?:build|setup) failed\]/, "go test couldn't build the package"],
+      [/Compilation (?:error|failed)|Execution failed for task ':[\w:-]*compile\w*'/, "Gradle couldn't compile the tests"],
+      [/^Build FAILED\.|: error CS\d{4}:/, "dotnet couldn't build the tests"]
+    ].freeze
+    ANSI = /\e\[[0-9;]*m/
+
     module_function
 
     # Why nothing ran, or nil. Exit 127 (command not found) is left to the dependency check.
@@ -24,6 +38,14 @@ module Runeforge
       return nil if exit_code.nil? || exit_code.zero? || exit_code == 127
 
       NOTHING_RAN.find { |pattern, _| output.to_s.match?(pattern) }&.last
+    end
+
+    # Why the tests didn't build, or nil.
+    def build_failed(output, exit_code)
+      return nil if exit_code.nil? || exit_code.zero? || exit_code == 127
+
+      text = output.to_s.scrub.gsub(ANSI, "")
+      BUILD_FAILED.find { |pattern, _| text.match?(pattern) }&.last
     end
   end
 end

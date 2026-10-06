@@ -62,13 +62,14 @@ RSpec.describe Runeforge::Config, "per-project settings" do
     path = File.join(tmpdir, "runeforge.yml")
     File.write(path, <<~YAML)
       projects:
-        ~/code/emoji-tasks: { manual_merge: "yes", merge_method: fast, poll_seconds: 1 }
+        ~/code/emoji-tasks: { manual_merge: "yes", merge_method: fast, poll_seconds: 1, launch_check: "on" }
         api: true
     YAML
     expect(described_class.problems(path)).to contain_exactly(
       "`projects.~/code/emoji-tasks.manual_merge` must be true or false",
       "`projects.~/code/emoji-tasks.merge_method` must be one of merge, squash, rebase",
-      "`projects.~/code/emoji-tasks.poll_seconds`: only manual_merge, merge_method, sandbox can be set per project",
+      "`projects.~/code/emoji-tasks.launch_check` must be true or false",
+      "`projects.~/code/emoji-tasks.poll_seconds`: only manual_merge, merge_method, sandbox, launch_check can be set per project",
       "`projects.api` must be a mapping of settings"
     )
   end

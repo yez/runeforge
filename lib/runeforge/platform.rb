@@ -70,7 +70,9 @@ module Runeforge
       xcode = mac ? self.xcode : nil
       android = android_sdk?
       os = mac ? "macOS" : RUBY_PLATFORM[/linux|mingw|mswin|bsd/] || RUBY_PLATFORM
-      apple_tools = if xcode&.ready? then xcode.version
+      apple_tools = if xcode&.ready?
+                      window = apple_toolchain&.simulator_app
+                      window ? "#{xcode.version} (simulator window: #{File.basename(window, '.app')})" : xcode.version
                     elsif xcode then [xcode.version, xcode.problem].compact.join(", but ")
                     end
       tools = [apple_tools, (android ? "the Android SDK" : nil)].compact
@@ -134,6 +136,55 @@ module Runeforge
       return Xcode.new(version:, problem: "it has no iOS SDK", fix: "install the iOS platform: `xcodebuild -downloadPlatform iOS`") unless ok
 
       Xcode.new(version:, problem: nil, fix: nil)
+    end
+
+    # The Apple toolchain on this machine as agents need it: which window shows simulators (Xcode 27
+    # replaced Simulator.app with DeviceHub.app, so `open -a Simulator` fails there), which
+    # simulators exist (so -destination names are real) and which project tools are installed.
+    # simulator_app is nil when neither app is found; runtimes maps an iOS version to device
+    # names, newest first.
+    AppleToolchain = Data.define(:xcode_version, :developer_dir, :simulator_app, :runtimes, :tools)
+    SIMULATOR_APPS = [["Applications/Simulator.app", "com.apple.iphonesimulator"],
+                      ["../Applications/DeviceHub.app", "com.apple.dt.Devices"]].freeze
+    APPLE_TOOLS = %w[xcodegen tuist pod fastlane].freeze
+
+    # Nil off a Mac or without a ready Xcode. Cached like #xcode.
+    def apple_toolchain
+      return nil unless mac? && xcode.ready?
+
+      @apple_toolchain = nil if @apple_toolchain_at && Process.clock_gettime(Process::CLOCK_MONOTONIC) - @apple_toolchain_at > XCODE_SECONDS
+      @apple_toolchain ||= detect_apple_toolchain.tap { @apple_toolchain_at = Process.clock_gettime(Process::CLOCK_MONOTONIC) }
+    end
+
+    def detect_apple_toolchain(developer_dir: nil)
+      dev = developer_dir || capture("xcode-select", "-p").then { |out, ok| ok ? out.strip : nil }
+      AppleToolchain.new(xcode_version: xcode.version, developer_dir: dev, simulator_app: simulator_app(dev),
+                         runtimes: simulator_runtimes, tools: APPLE_TOOLS.select { |tool| on_path?(tool) })
+    end
+
+    def simulator_app(dev)
+      found = dev && SIMULATOR_APPS.map { |path, _| File.expand_path(path, dev) }.find { |path| File.directory?(path) }
+      found || SIMULATOR_APPS.lazy.filter_map do |_, bundle_id|
+        out, ok = capture("mdfind", "kMDItemCFBundleIdentifier == '#{bundle_id}'")
+        ok ? out.lines.map(&:strip).find { |path| File.directory?(path) } : nil
+      end.first
+    end
+
+    def simulator_runtimes
+      out, ok = capture("xcrun", "simctl", "list", "devices", "available", "-j")
+      return {} unless ok
+
+      JSON.parse(out).fetch("devices", {}).filter_map do |runtime, devices|
+        version = runtime[/SimRuntime\.iOS-([\d-]+)\z/, 1]&.tr("-", ".")
+        names = Array(devices).map { |d| d["name"] }.compact
+        [version, names] if version && names.any?
+      end.sort_by { |version, _| Gem::Version.new(version) }.reverse.to_h
+    rescue JSON::ParserError
+      {}
+    end
+
+    def on_path?(tool)
+      ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).any? { |dir| File.executable?(File.join(dir, tool)) }
     end
 
     def capture(*command)

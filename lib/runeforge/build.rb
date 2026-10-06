@@ -17,12 +17,76 @@ module Runeforge
 
     def self.slug(text) = text.to_s.downcase.gsub(/[^a-z0-9]+/, "-").gsub(/\A-|-\z/, "")[0, 40].sub(/-\z/, "")
 
-    def initialize(env, input:, dir: nil, stdin: $stdin, stdout: $stdout)
+    # from: start at this step (see BuildProgress#start); rerun: build every step again, even the
+    # ones an earlier run finished. resume: a run from BuildProgress#runs to continue (see .resume).
+    def initialize(env, input:, dir: nil, stdin: $stdin, stdout: $stdout, from: nil, rerun: false, resume: nil)
       @env = env
-      @input = self.class.parse(input)
       @dir = dir
       @stdin = stdin
       @out = stdout
+      @from = from
+      @rerun = rerun
+      @resume = resume
+      if resume
+        @input = resume[:plan]
+        @plan_source = resume[:input]["plan"] || { "text" => resume[:input]["context"] || resume[:input]["description"],
+                                                   "list" => !resume[:input]["context"].nil?, "source" => "resumed" }
+      else
+        from_file = File.file?(input.to_s)
+        @input = self.class.parse(input)
+        # Stored on each task, so `runeforge resume` can rebuild the step list without the file.
+        @plan_source = { "text" => from_file ? File.read(input) : input.to_s, "list" => from_file,
+                         "source" => from_file ? File.expand_path(input) : "prompt" }
+      end
+    end
+
+    # `runeforge resume -d DIR`: continues the newest build in DIR that didn't finish (or the run
+    # named by `run`), from the plan it stored. Returns nil when there's nothing to resume.
+    def self.resume(env, dir:, run: nil, from: nil, stdin: $stdin, stdout: $stdout)
+      # Registered as build registers it: the repository's top level, symlinks resolved.
+      directory = File.expand_path(dir)
+      raise Error, "#{directory} does not exist" unless File.directory?(directory)
+
+      top = Git.run("rev-parse", "--show-toplevel", dir: directory, allow_failure: true)&.strip
+      directory = File.realpath(top.to_s.empty? ? directory : top)
+      repo = env.repos.list.find do |row|
+        url = row[:url].to_s
+        url.start_with?("/", "~") && File.directory?(File.expand_path(url)) && File.realpath(File.expand_path(url)) == directory
+      end
+      raise Error, "no runeforge builds in #{directory}; start one with `runeforge build FILE --dir #{dir}`" unless repo
+
+      runs = BuildProgress.new(env, repo[:name]).runs
+      raise Error, "no runeforge builds in #{directory}; start one with `runeforge build FILE --dir #{dir}`" if runs.empty?
+
+      chosen =
+        if run
+          runs.reverse.find { |r| [r[:id], r[:lane], r[:lane].delete_prefix("fg-")].include?(run) } ||
+            raise(Error, "no build run #{run} in #{directory} (runs: #{runs.map { |r| r[:id] }.last(5).join(', ')})")
+        else
+          runs.reverse.find { |r| !r[:finished] }
+        end
+      if chosen.nil?
+        stdout.puts "Nothing to resume in #{directory}: the last build (#{runs.last[:id]}) finished every step."
+        return nil
+      end
+      raise Error, "can't resume #{chosen[:id]}: its plan isn't stored on its tasks" unless chosen[:plan]
+
+      if chosen[:live]
+        busy = chosen[:tasks].reject { |t| TERMINAL_STATUSES.include?(t[:status]) }.last
+        raise Error, "#{chosen[:id]} is still running (task #{busy[:id]} is #{busy[:status]}); stop it with " \
+                     "`runeforge cancel #{busy[:id]}` or wait for it to finish"
+      end
+      # A build that was killed leaves its current step unfinished; nothing is driving it any more.
+      chosen[:tasks].reject { |t| TERMINAL_STATUSES.include?(t[:status]) }.each do |task|
+        env.tasks.cancel(task[:id], reason: "abandoned: its build stopped; continued by runeforge resume")
+      end
+
+      stdout.puts "Resuming \"#{chosen[:plan].title}\" (run #{chosen[:id]}, started #{chosen[:started_at]&.strftime('%Y-%m-%d %H:%M')})"
+      # Earlier attempts at the same plan are covered by this one (steps are matched by content).
+      same_plan = ->(r) { r[:plan] && r[:plan].steps.map(&:key) == chosen[:plan].steps.map(&:key) }
+      others = runs.reject { |r| r[:finished] || r.equal?(chosen) || same_plan.call(r) }
+      stdout.puts "  Other unfinished runs here: #{others.map { |r| r[:id] }.join(', ')} (pick one with --run)" if others.any?
+      new(env, input: nil, dir: directory, resume: chosen, from:, stdin:, stdout:)
     end
 
     # Returns true when every step finished.
@@ -32,16 +96,23 @@ module Runeforge
 
     def run
       project = @dir ? { name: nil, url: File.expand_path(@dir) } : nil
-      confirm_steps!
+      # In an existing project the step list is shown with what earlier runs finished (plan_start).
+      confirm_steps! unless @dir
       platform_check!(project)
       @env.check_agent_credentials!(project:)
       directory, created = resolve_directory
       Setup.new(config_path: Config.locate, out: @out).prepare(@env)
       repo = @registered = register(directory)
-      branch = unique_branch(directory, repo)
-      @out.puts "\nBuilding \"#{@input.title}\" in #{directory} on branch #{branch} (#{plural(@input.steps.size, 'step')})"
+      start = plan_start(repo)
+      return nothing_left(directory) if start.skip == @input.steps.size
 
-      finished = run_steps(repo, branch)
+      # Manual merging stacks every step on one branch, so a continued build keeps adding to it.
+      branch = (!merging? && start.branch) || unique_branch(directory, repo)
+      remaining = @input.steps.size - start.skip
+      from = start.skip.positive? ? ", from step #{start.skip + 1}" : ""
+      @out.puts "\nBuilding \"#{@input.title}\" in #{directory} on branch #{branch} (#{plural(remaining, 'step')}#{from})"
+
+      finished = run_steps(repo, branch, start)
       report(directory, branch, created, finished)
       finished
     ensure
@@ -174,11 +245,63 @@ module Runeforge
 
     # --- steps -------------------------------------------------------------------------------
 
-    def run_steps(repo, branch)
+    # Where this build starts: after the steps at the start that earlier runs already finished
+    # (BuildProgress), once the person agrees. Lists every step with what happens to it.
+    def plan_start(repo)
+      progress = BuildProgress.new(@env, repo)
+      base = @env.repos.refresh(repo)
+      # Skipping finished steps is for continuing a plan. A single prompt given again is a request
+      # to build it again (on a fresh branch); `runeforge resume` continues one that failed.
+      return progress.start(@input, base:, rerun: true) unless @input.multi_step? || @resume
+
+      start = progress.start(@input, base:, from: @from, rerun: @rerun)
+      show_progress(start) if @dir
+      start.notes.each { |note| @out.puts "  ! #{note}" }
+      skip, total = start.skip, @input.steps.size
+      if skip.positive? && skip < total && @from.nil? && interactive?
+        answer = ask("Skip #{plural(skip, 'finished step')} and start at step #{skip + 1}? [Y/n]: ")
+        start = progress.start(@input, base:, rerun: true) if answer.casecmp?("n")
+      elsif skip == total && !@resume && interactive?
+        answer = ask("Every step is already done. Build them all again? [y/N]: ")
+        start = progress.start(@input, base:, rerun: true) if answer.casecmp?("y")
+      end
+      remaining = total - start.skip
+      if @dir && remaining > CONFIRM_STEPS
+        answer = ask("Build #{remaining} steps? [y/N]: ")
+        raise Error, "stopped before building; nothing was changed" unless answer.casecmp?("y")
+      end
+      start
+    end
+
+    def show_progress(start)
+      return unless @input.multi_step? || start.skip.positive?
+
+      @out.puts "#{plural(@input.steps.size, 'step')}:"
+      @input.steps.each_with_index do |step, index|
+        status =
+          if index >= start.skip then nil
+          elsif (task = start.done[index]) then "done (task #{task[:id]}, #{(task[:merged_sha] || task[:head_sha]).to_s[0, 7]})"
+          else "skipped (--from)"
+          end
+        @out.puts format("  %s %2d. %s%s", status ? "✓" : "▶", index + 1, step.title, status ? "  #{status}" : "")
+      end
+    end
+
+    def nothing_left(directory)
+      @out.puts "\nNothing to build: every step of \"#{@input.title}\" is done and in #{directory}. " \
+                "To build them again, pass --rerun."
+      true
+    end
+
+    # A person at a terminal can be asked; otherwise (a script, a pipe) the defaults apply.
+    def interactive? = @stdin.respond_to?(:tty?) && @stdin.tty?
+
+    def run_steps(repo, branch, start)
       lane = "fg-#{SecureRandom.hex(4)}"
       run_id = "#{self.class.slug(@input.title)[0, 30].sub(/-\z/, '').then { |s| s.empty? ? 'build' : s }}-#{lane.delete_prefix('fg-')}"
-      base = @env.repos.refresh(repo)
-      locked = {}
+      base = start.base
+      locked = start.locked
+      @steps_run = 0
       budgets = @env.config["budgets"]
       @supervisor = Supervisor.new(@env, lane:)
       @worker = Worker.new(@env, roles: Roles.names, lane:)
@@ -188,6 +311,9 @@ module Runeforge
 
       @unmerged = []
       @input.steps.each_with_index do |step, index|
+        next if index < start.skip
+
+        @steps_run += 1
         multi = @input.steps.size > 1
         # Merging: each step gets its own branch off the base it starts from. Manual: one branch.
         step_branch = merging? && multi ? "#{branch}-s#{index + 1}" : branch
@@ -196,6 +322,7 @@ module Runeforge
           locked_paths: locked, title: step.title, mailbox: @env.mailbox("cli"),
           input: { "title" => step.title, "description" => step.body,
                    "context" => (multi ? @input.text : nil), "step" => "#{index + 1} of #{@input.steps.size}",
+                   "step_key" => step.key, "plan" => @plan_source,
                    "platform_confirmed" => @platform_confirmed }.compact,
           max_attempts: budgets["max_attempts"], token_budget: budgets["token_budget"],
           deadline_at: budgets["max_task_minutes"] && (Runeforge.now + (budgets["max_task_minutes"] * 60))
@@ -270,7 +397,9 @@ module Runeforge
       when "code.done" then "✓ coded: #{plural(Array(payload['changed_paths']).size, 'file')} changed (#{sha})"
       when "code.failed" then "✗ attempt #{payload['attempt']} failed: #{payload['reason'].to_s.lines.first&.strip}"
       when "test.request" then "· testing #{sha}"
-      when "test.result" then payload["passed"] ? "✓ tests passed" : "✗ #{payload['reason'] || 'tests failed'}"
+      when "test.result"
+        line = payload["passed"] ? "✓ tests passed" : "✗ #{payload['reason'] || 'tests failed'}"
+        [line, *Array(payload["warnings"]).map { |warning| "  ! #{warning}" }].join("\n  ")
       when "review.request" then "· checking locked tests"
       when "review.verdict"
         verdict = payload["approved"] ? "✓ locked tests untouched" : "✗ #{Array(payload['reasons']).join('; ')}"
@@ -290,7 +419,7 @@ module Runeforge
         base = @env.repos.fetch(@registered)[:base_branch]
         if @unmerged.empty?
           @out.puts "\nDone. The work is merged into #{base} in #{directory}:"
-          @out.puts "  git -C #{directory} log --oneline --first-parent -#{@input.steps.size} #{base}"
+          @out.puts "  git -C #{directory} log --oneline --first-parent -#{@steps_run || @input.steps.size} #{base}"
           run_hint(directory)
         else
           @out.puts "\nDone, but not everything was merged; see the warnings above. Unmerged work is on:"
@@ -310,6 +439,7 @@ module Runeforge
         @out.puts "\nStopped: #{task ? "#{task[:status]}. #{task[:error]}" : 'no task ran'}"
         @out.puts "Finished steps are on branch #{branch}." if Git.run("rev-parse", "--verify", "--quiet", "refs/heads/#{branch}", dir: directory, allow_failure: true)
         @out.puts "Details: runeforge status #{task[:id]}   Logs: runeforge logs #{task[:id]}" if task
+        @out.puts "Continue with: runeforge resume -d #{directory}" if @registered
       end
     end
 

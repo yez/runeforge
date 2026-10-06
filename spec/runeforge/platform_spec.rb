@@ -49,7 +49,8 @@ RSpec.describe Runeforge::Platform do
     end
 
     it "is compatible on a Mac with Xcode ready to build for iOS" do
-      allow(described_class).to receive_messages(mac?: true, xcode: Runeforge::Platform::Xcode.new(version: "Xcode 27.0", problem: nil, fix: nil))
+      allow(described_class).to receive_messages(mac?: true, xcode: Runeforge::Platform::Xcode.new(version: "Xcode 27.0", problem: nil, fix: nil),
+                                                 apple_toolchain: nil)
       verdict = described_class.verdict(build_env("sandbox" => { "mode" => "none" }), nil, apple)
       expect(verdict.status).to eq("compatible")
       expect(verdict.environment.description).to eq("this machine (macOS, Xcode 27.0), no sandbox")

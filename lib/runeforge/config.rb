@@ -67,7 +67,7 @@ module Runeforge
     end
 
     # Settings that can differ per project (see "projects" in DEFAULTS).
-    PROJECT_KEYS = %w[manual_merge merge_method sandbox].freeze
+    PROJECT_KEYS = %w[manual_merge merge_method sandbox launch_check].freeze
     MERGE_METHODS = %w[merge squash rebase].freeze
     SANDBOX_MODES = %w[docker podman none].freeze
 
@@ -80,6 +80,9 @@ module Runeforge
         found = (settings.keys.map(&:to_s) - PROJECT_KEYS).map { |key| "`projects.#{project}.#{key}`: only #{PROJECT_KEYS.join(', ')} can be set per project" }
         if settings.key?("manual_merge") && ![true, false].include?(settings["manual_merge"])
           found << "`projects.#{project}.manual_merge` must be true or false"
+        end
+        if settings.key?("launch_check") && ![true, false].include?(settings["launch_check"])
+          found << "`projects.#{project}.launch_check` must be true or false"
         end
         if settings.key?("merge_method") && !MERGE_METHODS.include?(settings["merge_method"].to_s)
           found << "`projects.#{project}.merge_method` must be one of #{MERGE_METHODS.join(', ')}"
@@ -154,7 +157,9 @@ module Runeforge
         "max_files_changed" => 200,
         "max_spec_bytes" => 65_536,
         "max_output_bytes" => 1_000_000,
-        "feedback_bytes" => 4_000
+        "feedback_bytes" => 4_000,
+        # The reviewer's launch check (an Apple app's setup + run command, see LaunchCheck).
+        "launch_check_seconds" => 600
       },
       "test_globs" => [
         "spec/**/*", "test/**/*", "tests/**/*", "__tests__/**/*", "**/__tests__/**/*",
@@ -186,6 +191,9 @@ module Runeforge
       # on GitHub (merge_method: merge, squash or rebase), directly for other remotes. true leaves
       # branches and pull requests for a person to merge.
       "manual_merge" => false,
+      # Before merging an Apple app built on this Mac, run its run command and check the app
+      # launches and keeps running on the simulator (it opens the simulator window briefly).
+      "launch_check" => true,
       # Plans committed to a project's runeforge/inbox/ are queued and built in order (see
       # Runeforge::Inbox). The supervisor checks each registered repository this often.
       "inbox" => {

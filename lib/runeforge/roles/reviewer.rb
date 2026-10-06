@@ -5,7 +5,8 @@ module Runeforge
     # Deterministic gate: every locked test file must be byte-for-byte what the planner committed.
     # It also checks the project's docs say how to run it (docs/run-conventions.md): blocking only
     # when Runeforge defined the run command itself (run_docs_required), a note otherwise, so a
-    # project's own way of documenting its launch is never forced to change.
+    # project's own way of documenting its launch is never forced to change. For an Apple app
+    # built on this Mac it also runs the run command and checks the app launches (LaunchCheck).
     class Reviewer < Base
       DOCS = %w[README.md readme.md Readme.md README.markdown README CONTRIBUTING.md].freeze
 
@@ -21,6 +22,12 @@ module Runeforge
         notes = []
         if (problem = run_docs_problem(sha))
           repo[:run_docs_required] ? reasons << problem : notes << problem
+        end
+        # Only once everything else passed: it builds and launches the app, which takes minutes.
+        if reasons.empty? && LaunchCheck.applies?(env, repo)
+          outcome = with_workspace(sha, "launch") { |workspace| LaunchCheck.new(env, repo).call(workspace.path) }
+          reasons.concat(outcome.reasons)
+          notes << outcome.note if outcome.note
         end
 
         result("review.verdict", { "approved" => reasons.empty?, "reasons" => reasons, "notes" => notes,

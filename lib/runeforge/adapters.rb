@@ -58,6 +58,13 @@ module Runeforge
       # The CLI's own explanation when a run failed, from its output or error stream; nil if none.
       def failure_detail(_output, _errors = "") = nil
 
+      # The agent's closing summary (its explanation of what it did or why it stopped), or nil.
+      # Claude Code and Runeforge's own agent both print it as "result" in their final JSON.
+      def summary(output)
+        text = (last_json(output) || {})["result"]
+        text.is_a?(String) && !text.strip.empty? ? text.strip : nil
+      end
+
       # The model as this CLI expects it.
       def model_arg = model
 

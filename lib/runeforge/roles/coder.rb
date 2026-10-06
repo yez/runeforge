@@ -16,7 +16,7 @@ module Runeforge
       def code(workspace, sha)
         prompt = Prompts.code(task:, attempt:, locked_paths: locked_paths.keys, test_command: repo[:test_command],
                               run_command: repo[:run_command], run_docs_required: repo[:run_docs_required] == true,
-                              feedback: msg.payload["feedback"])
+                              feedback: msg.payload["feedback"], apple: apple_toolchain)
         run = run_agent(workspace, prompt)
         updates = usage_updates(run.usage)
         failure = agent_failure(run)
@@ -32,6 +32,10 @@ module Runeforge
       rescue Committer::PatchRejected, Workspace::UnsafeFile => e
         failed(only_meta_changes(workspace, e.message), run, updates || {})
       end
+
+      # Kept so a coder that stops on purpose (e.g. the locked tests contradict each other) can be
+      # heard: the supervisor hands it to the planner when the coder is stuck.
+      SUMMARY_BYTES = 4000
 
       # Runeforge's own files in .runeforge/; anything else there was written by the agent.
       OWN_META = %w[prompt.md agent.out agent.err changes.patch agent.rb].freeze
@@ -49,7 +53,10 @@ module Runeforge
       end
 
       def failed(reason, run, updates)
-        result("code.failed", { "attempt" => attempt, "reason" => reason, "log_path" => run&.log_path }, task_updates: updates)
+        summary = run && agent.adapter.summary(run.output)
+        payload = { "attempt" => attempt, "reason" => reason, "log_path" => run&.log_path,
+                    "summary" => summary&.byteslice(0, SUMMARY_BYTES)&.scrub }.compact
+        result("code.failed", payload, task_updates: updates)
       end
     end
 

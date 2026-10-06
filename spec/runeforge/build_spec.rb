@@ -316,6 +316,79 @@ RSpec.describe Runeforge::Build do
     ensure
       ENV["PATH"] = original_path
     end
+
+    context "continuing a build that stopped" do
+      # The coder can't do the farewell step until `allow` exists: it changes nothing, the step is
+      # planned again and then fails, and the build stops after the greeting step.
+      let(:code_script) do
+        <<~SH
+          word=$(grep -o -m1 -E 'greeting|farewell' .runeforge/prompt.md)
+          [ "$word" = farewell ] && [ ! -f #{tmpdir}/allow ] && exit 0
+          mkdir -p lib
+          echo "$word" > "lib/${word}.txt"
+        SH
+      end
+      let(:plan) { File.join(tmpdir, "plan.md").tap { |path| File.write(path, "# Greeter\n\n- Add a greeting\n- Add a farewell\n") } }
+      let(:target) { File.join(tmpdir, "greeter") }
+
+      def stop_after_greeting(env)
+        expect(run_build(env, plan, answers: "#{target}\n")).to be(false)
+        expect(out.string).to include("Continue with: runeforge resume -d #{target}")
+        FileUtils.touch(File.join(tmpdir, "allow"))
+        out.truncate(0)
+        out.rewind
+      end
+
+      def farewell_tasks(env) = env.tasks.list.select { |task| task[:title] == "Add a farewell" }
+
+      it "skips the finished steps when run again with the same plan, with their tests still locked" do
+        env = build_env_for
+        stop_after_greeting(env)
+        expect(run_build(env, plan, dir: target)).to be(true)
+
+        expect(out.string).to match(/✓  1\. Add a greeting  done \(task \S+-s1, \h{7}\)/)
+        expect(out.string).to include("▶  2. Add a farewell", "(1 step, from step 2)")
+        expect(env.tasks.list.count { |task| task[:title] == "Add a greeting" }).to eq(1)
+        last = farewell_tasks(env).max_by { |task| task[:created_at] }
+        expect(last[:status]).to eq("done")
+        expect(JSON.parse(last[:locked_paths]).keys).to contain_exactly("test/greeting_test.sh", "test/farewell_test.sh")
+        expect(Dir.children(File.join(target, "lib")).sort).to eq(%w[farewell.txt greeting.txt])
+      end
+
+      it "resumes with `resume -d` from the plan it stored, without the file" do
+        env = build_env_for
+        stop_after_greeting(env)
+        File.delete(plan)
+        build = described_class.resume(env, dir: target, stdin: StringIO.new, stdout: out)
+        expect(build.run).to be(true)
+
+        expect(out.string).to include("Resuming \"Greeter\"", "▶  2. Add a farewell")
+        expect(Dir.children(File.join(target, "lib")).sort).to eq(%w[farewell.txt greeting.txt])
+        expect(described_class.resume(env, dir: target, stdout: out)).to be_nil
+        expect(out.string).to include("Nothing to resume in #{target}")
+      end
+
+      it "says there's nothing to build when every step is done" do
+        env = build_env_for
+        FileUtils.touch(File.join(tmpdir, "allow"))
+        expect(run_build(env, plan, answers: "#{target}\n")).to be(true)
+        expect(run_build(env, plan, dir: target)).to be(true)
+        expect(out.string).to include("Nothing to build: every step of \"Greeter\" is done")
+        expect(env.tasks.list.size).to eq(2)
+      end
+
+      it "starts again from step 1 with --rerun" do
+        env = build_env_for
+        FileUtils.touch(File.join(tmpdir, "allow"))
+        expect(run_build(env, plan, answers: "#{target}\n")).to be(true)
+        # The fake planner rewrites the same test, so the repeated step stops at planning; what
+        # matters here is where the build starts.
+        described_class.new(env, input: plan, dir: target, rerun: true, stdin: StringIO.new, stdout: out).run
+
+        expect(out.string).to include("▶  1. Add a greeting", "(2 steps)", "Step 1/2: Add a greeting")
+        expect(env.tasks.list.count { |task| task[:title] == "Add a greeting" }).to eq(2)
+      end
+    end
   end
 
   describe Runeforge::Operator do
@@ -364,17 +437,17 @@ RSpec.describe Runeforge::Build do
 
     it "treats a bare prompt or file as the build command" do
       env_args, build_args = dispatch("Build me a thing")
-      expect(build_args).to eq(input: "Build me a thing", dir: nil)
+      expect(build_args).to eq(input: "Build me a thing", dir: nil, from: nil, rerun: nil)
       expect(env_args[:database]).to be_nil
     end
 
     it "accepts -d for the directory and -db for the database, in any order" do
       env_args, build_args = dispatch("-db", "sqlite:///tmp/x.db", "plan.md", "-d", "proj")
-      expect(build_args).to eq(input: "plan.md", dir: "proj")
+      expect(build_args).to eq(input: "plan.md", dir: "proj", from: nil, rerun: nil)
       expect(env_args[:database]).to eq("sqlite:///tmp/x.db")
 
       _env, build_args = dispatch("-d", "proj", "plan.md")
-      expect(build_args).to eq(input: "plan.md", dir: "proj")
+      expect(build_args).to eq(input: "plan.md", dir: "proj", from: nil, rerun: nil)
     end
   end
 end

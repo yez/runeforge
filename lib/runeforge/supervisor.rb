@@ -112,13 +112,27 @@ module Runeforge
       end
 
       # Sends the coder another attempt with the feedback, unless the task is out of budget.
+      # A coder stuck on failing tests it can't change means the plan is wrong, so the planner gets
+      # the coder's explanation and plans the step again (REPLANS times) before the task fails.
       def retry_or_fail(feedback)
-        text = feedback_text(feedback)
+        text = [feedback_text(feedback), warnings_text].reject(&:empty?).join("\n\n")
         limit = task[:attempts] >= task[:max_attempts] && "attempt limit reached (#{task[:attempts]}/#{task[:max_attempts]})"
-        reason = stuck_on_failed_tests || budget_exhausted || limit
+        stuck = stuck_on_failed_tests
+        return replan!(stuck) if stuck && replans < REPLANS && !budget_exhausted
+
+        reason = stuck || budget_exhausted || limit
         return fail!("#{reason}. Last feedback: #{text[0, 500]}") if reason
 
         send_to(:coder, "code.request", sha: task[:head_sha], feedback: text)
+      end
+
+      # Discards this step's plan and code and asks the planner again, with what went wrong. The
+      # earlier steps' tests stay locked as they were; this step's own tests are the planner's again.
+      def replan!(reason)
+        update_task(locked_paths: JSON.generate(locks_before_plan), attempts: 0)
+        restart_from!(task[:base_sha])
+        send_to(:planner, "plan.request", sha: task[:base_sha], input: plan_input, replan: true,
+                                          feedback: replan_feedback(reason))
       end
 
       # Adds the planner's tests to the locked set (earlier steps' tests stay locked).
@@ -160,7 +174,11 @@ module Runeforge
 
       def dependency_checks = @env.db[:runeforge_messages].where(task_id: task[:id], type: "deps.check").count
 
-      def plan_requests = @env.db[:runeforge_messages].where(task_id: task[:id], type: "plan.request").count
+      # Plan requests in this round (since the last re-plan), so a re-plan gets its own PLAN_ATTEMPTS.
+      def plan_requests = messages_this_round.where(type: "plan.request").count
+
+      # Times the planner was asked again because the coder got stuck on its tests.
+      def replans = replan_requests.size
 
       # The request the planner was given, to give it again.
       def plan_input
@@ -194,17 +212,68 @@ module Runeforge
       # Attempts in a row with nothing to commit, after a failed test run, before giving up.
       STUCK_AFTER = 2
       NO_PROGRESS = %r{\Athe agent (?:made no changes|only changed files in \.runeforge/)}
+      # Re-plans allowed per task when the coder is stuck on the plan's tests.
+      REPLANS = 1
+
+      def replan_requests
+        @env.db[:runeforge_messages].where(task_id: task[:id], type: "plan.request").order(:id).all
+            .map { |row| Message.from_row(row) }.select { |m| m.payload["replan"] }
+      end
+
+      # This task's messages since its last re-plan (all of them if it was never re-planned).
+      def messages_this_round
+        start = replan_requests.last&.id
+        scope = @env.db[:runeforge_messages].where(task_id: task[:id])
+        start ? scope.where { id >= start } : scope
+      end
+
+      # The tests the task had locked before this round's plan: the plan's own test files go back
+      # to how they are at the base commit (unlocked if they didn't exist there).
+      def locks_before_plan
+        locked = JSON.parse(task[:locked_paths] || "{}")
+        plan = messages_this_round.where(type: "plan.done").order(Sequel.desc(:id)).first
+        return locked unless plan
+
+        Message.from_row(plan).payload.fetch("locked_paths", {}).each_key do |path|
+          oid = @env.repos.oid(task[:repo], task[:base_sha], path)
+          oid ? locked[path] = oid : locked.delete(path)
+        end
+        locked
+      end
+
+      # What the planner needs to fix: why the coder stopped, in its own words, and the test output.
+      def replan_feedback(reason)
+        rows = messages_this_round.where(type: %w[code.failed test.result]).order(Sequel.desc(:id)).limit(20).all
+        messages = rows.map { |row| Message.from_row(row) }
+        summaries = messages.select { |m| m.type == "code.failed" }.filter_map { |m| m.payload["summary"] }.first(STUCK_AFTER)
+        test = messages.find { |m| m.type == "test.result" && m.payload["passed"] == false }
+        # Room for the coder's explanations and the test output, which a single feedback_bytes can't hold.
+        limit = @env.config.dig("limits", "feedback_bytes") * 3
+        text = [
+          "The coder couldn't make your acceptance tests pass and stopped changing the code: #{reason.split('. Last test output:').first}.",
+          "Your tests are probably wrong: an assertion that contradicts the locked tests from earlier steps, or " \
+          "behaviour the step doesn't ask for. Check every assertion against the existing code and the locked tests " \
+          "and fix the tests (your previous plan was discarded).",
+          (summaries.any? && "## What the coder said\n#{summaries.reverse.join("\n\n---\n\n")}"),
+          (test && "## Last test output\n#{test.payload['output_tail'].to_s[-3000..] || test.payload['output_tail']}")
+        ].select { |part| part.is_a?(String) }.join("\n\n")
+        text.bytesize > limit ? text.byteslice(0, limit).scrub : text
+      end
 
       # The coder can't change the test command or the locked tests. When it keeps committing
       # nothing while the tests fail, more attempts won't help: the plan is what's wrong.
       def stuck_on_failed_tests
-        messages = @env.db[:runeforge_messages].where(task_id: task[:id], type: %w[code.done code.failed test.result])
+        messages = messages_this_round.where(type: %w[code.done code.failed test.result])
                        .order(Sequel.desc(:id)).limit(20).all.map { |row| Message.from_row(row) }
         recent = messages.select { |m| m.type.start_with?("code.") }.first(STUCK_AFTER)
         return nil unless recent.size == STUCK_AFTER &&
                           recent.all? { |m| m.type == "code.failed" && m.payload["reason"].to_s.match?(NO_PROGRESS) }
 
-        test = messages.find { |m| m.type == "test.result" && m.payload["passed"] == false }
+        # After a re-plan the coder may never commit anything, so no tests run in this round; the
+        # failing run that led to the re-plan still counts.
+        test = messages.find { |m| m.type == "test.result" && m.payload["passed"] == false } ||
+               @env.db[:runeforge_messages].where(task_id: task[:id], type: "test.result").order(Sequel.desc(:id)).limit(20).all
+                   .map { |row| Message.from_row(row) }.find { |m| m.payload["passed"] == false }
         return nil unless test
 
         "the coder changed nothing on its last #{STUCK_AFTER} attempts after the tests failed, so the test command " \
@@ -222,6 +291,15 @@ module Runeforge
 
       def cancel_in_flight!
         Events.cancel_messages(@env.db, @env.db[:runeforge_messages].where(task_id: task[:id]).exclude(id: msg.id))
+      end
+
+      # Compiler warnings from the latest test run, for the coder to fix along the way.
+      def warnings_text
+        row = @env.db[:runeforge_messages].where(task_id: task[:id], type: "test.result").order(Sequel.desc(:id)).first
+        warnings = row ? Array(Message.from_row(row).payload["warnings"]) : []
+        return "" if warnings.empty?
+
+        "Compiler warnings from the last test run (fix these too):\n#{warnings.map { |w| "- #{w}" }.join("\n")}"
       end
 
       def feedback_text(feedback)

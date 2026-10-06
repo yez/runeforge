@@ -175,6 +175,23 @@ module Runeforge
         say "Created #{task[:id]} on #{task[:branch]} from #{short(task[:base_sha])}"
       end
     end
+
+    desc "mark-done TASK", "Record that you finished a failed or stopped step yourself"
+    long_desc <<~DESC
+      For a build step you fixed by hand: SHA is the commit with the finished work, already in the
+      base branch (or, with manual merging, on any branch). The task becomes done, its tests are
+      locked as they are at SHA, and a build run again or `runeforge resume` skips the step.
+    DESC
+    option :sha, required: true, desc: "The commit with the finished work"
+    map "mark-done" => :mark_done
+    def mark_done(id)
+      guard do
+        task = BuildProgress.mark_done(env, id, sha: options[:sha])
+        locked = JSON.parse(task[:locked_paths] || "{}")
+        say "#{task[:id]} is done at #{short(task[:head_sha])}#{task[:merged_sha] ? ' (in the base branch)' : ''}; " \
+            "#{locked.size} test file#{'s' unless locked.size == 1} locked"
+      end
+    end
   end
 
   class CLI < Command
@@ -234,12 +251,36 @@ module Runeforge
       Without --dir, runeforge asks for a directory name and creates a new project there. With
       --dir, it works in that repository on a new branch and refuses to start if it has
       uncommitted changes. Runs in the foreground; Ctrl-C stops it.
+
+      Run again with the same file, it skips the steps at the start that an earlier run already
+      finished (matched by each step's text, and only if their work is still in the base branch)
+      and starts at the first one that isn't done. `runeforge resume -d DIR` does the same
+      without the file.
     DESC
     option :dir, aliases: "-d", desc: "Existing project directory to work in"
+    option :from, type: :numeric, desc: "Start at this step (the steps before it must be done, unless --rerun)"
+    option :rerun, type: :boolean, desc: "Build every step again, even the ones an earlier run finished"
     def build(input = nil)
       return help if input.nil?
 
-      guard { exit(1) unless Build.new(env, input:, dir: options[:dir]).run }
+      guard { exit(1) unless Build.new(env, input:, dir: options[:dir], from: options[:from], rerun: options[:rerun]).run }
+    end
+
+    desc "resume", "Continue the last unfinished build in a directory, from the step that didn't finish"
+    long_desc <<~DESC
+      Finds the newest build in DIR that didn't finish, rebuilds its step list from the plan it
+      stored, skips the steps that are done (and still in the base branch) and builds the rest.
+      A step that failed is planned again from scratch. If you fixed it yourself, record that
+      first with `runeforge task mark-done TASK --sha SHA`.
+    DESC
+    option :dir, aliases: "-d", required: true, desc: "The project directory"
+    option :run, desc: "The run to continue (its id or lane), instead of the newest unfinished one"
+    option :from, type: :numeric, desc: "Start at this step instead (the steps before it must be done)"
+    def resume
+      guard do
+        build = Build.resume(env, dir: options[:dir], run: options[:run], from: options[:from])
+        exit(1) if build && !build.run
+      end
     end
     desc "db SUBCOMMAND", "Database commands"
     subcommand "db", DbCommand
@@ -598,6 +639,8 @@ module Runeforge
         print_table(tasks.map { |t| ["  #{t[:id]}", t[:status], ago(t[:updated_at]), (t[:error] || t[:title]).to_s[0, 70]] }) if tasks.any?
         plans = Inbox.new(env).queue(repo[:name]).select { |p| Inbox::ACTIVE.include?(p[:status]) }
         say "\nInbox: #{plans.empty? ? 'nothing queued' : plans.map { |p| "#{p[:name]} (#{p[:status]})" }.join(', ')}"
+        last_run = BuildProgress.new(env, repo[:name]).runs.last
+        say "\nResume with: runeforge resume -d #{dir}   (build #{last_run[:id]} didn't finish)" if last_run && !last_run[:finished] && !last_run[:live]
       end
 
       # What the repo's latest task asked for (its task.created input), which tells the platform

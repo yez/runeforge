@@ -22,7 +22,8 @@ module Runeforge
         end
 
         prompt = Prompts.plan(task:, input:, test_globs:, test_command: repo[:test_command], locked_paths: locked_paths.keys,
-                              environment: verdict.environment.description, feedback: msg.payload["feedback"])
+                              environment: verdict.environment.description, feedback: msg.payload["feedback"],
+                              apple: apple_toolchain(verdict.platform))
         run = run_agent(workspace, prompt)
         updates = usage_updates(run.usage)
         failure = agent_failure(run)
@@ -122,7 +123,8 @@ module Runeforge
       end
 
       # Runs the plan's test command once on a clean export of the plan commit. Tests failing is
-      # expected; tests not running at all means the command can never pass, so the plan fails.
+      # expected; tests not running at all means the command can never pass, and tests that don't
+      # compile were never checked against the locked ones, so either fails the plan.
       def probe_tests(sha, project)
         # Same precedence as the tester: the repo's command once set, else the plan's.
         test_command = repo[:test_command].to_s.strip
@@ -133,10 +135,16 @@ module Runeforge
         script = [setup, test_command].reject(&:empty?).join(" && ")
         run = with_workspace(sha, "probe") { |workspace| sandbox.run(workdir: workspace.path, script:, env: {}) }
         output = [run.stdout, run.stderr].reject(&:empty?).join("\n")
-        why = TestProbe.nothing_ran(output, run.exit_code)
-        return nil unless why
+        if (why = TestProbe.nothing_ran(output, run.exit_code))
+          return "the test command `#{test_command}` didn't run the acceptance tests (#{why}): #{tail(output, 1500)}"
+        end
+        return nil unless (why = TestProbe.build_failed(output, run.exit_code))
 
-        "the test command `#{test_command}` didn't run the acceptance tests (#{why}): #{tail(output, 1500)}"
+        "the tests don't compile (#{why}), so none of them ran: neither your new tests nor the locked tests from " \
+          "earlier steps, and nothing showed whether your assertions can pass alongside them. Add the smallest stubs of " \
+          "the new types and functions to the source (placeholder bodies that return empty or default values; never " \
+          "crash or trap) so the suite builds, then run test_command again: the locked tests must pass and each new " \
+          "test must fail on its own assertion. Output: #{tail(output.gsub(TestProbe::ANSI, ''), 1500)}"
       end
 
       # Retryable: a mistake in the plan the planner can fix when told (see the workflow), as

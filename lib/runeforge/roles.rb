@@ -70,6 +70,14 @@ module Runeforge
 
       def limits = env.config["limits"]
 
+      # The Apple toolchain to describe to the agents (Prompts.apple_section): only for an Apple
+      # project built on this machine. The planner passes the platform it just detected.
+      def apple_toolchain(platform = repo[:platform])
+        return nil unless platform == "apple" && !env.sandboxed?(repo) && !env.dry_run?
+
+        Platform.apple_toolchain
+      end
+
       def with_workspace(sha, label)
         workspace = Workspace.create(root: env.workspaces_dir, name: "#{task[:id]}-#{label}")
         env.repos.export(task[:repo], sha:, to: workspace.path)
