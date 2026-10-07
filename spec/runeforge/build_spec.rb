@@ -389,6 +389,42 @@ RSpec.describe Runeforge::Build do
         expect(env.tasks.list.count { |task| task[:title] == "Add a greeting" }).to eq(2)
       end
     end
+
+    context "resuming with plans in the project's inbox" do
+      let(:target) { File.join(tmpdir, "greeter") }
+
+      def commit_plan(name, body)
+        FileUtils.mkdir_p(File.join(target, "runeforge/inbox"))
+        File.write(File.join(target, "runeforge/inbox", name), body)
+        git(target, "add", "-A")
+        git(target, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-qm", "plan #{name}")
+      end
+
+      it "builds the unfinished inbox plans once every build is done" do
+        env = build_env_for
+        expect(run_build(env, "Add a greeting", answers: "#{target}\n")).to be(true)
+        commit_plan("farewell.md", "# Add a farewell\n")
+
+        inbox = described_class.resume(env, dir: target, stdin: StringIO.new, stdout: out)
+        expect(inbox).to be_a(Runeforge::InboxRun)
+        expect(inbox.run).to be(true)
+
+        expect(out.string).to include("Building the inbox in #{target}", "✓ merged into main", "Add a farewell (farewell): done")
+        expect(File.read(File.join(target, "lib", "farewell.txt"))).to eq("farewell\n")
+        expect(git(target, "show", "main:runeforge/done/farewell.md")).to start_with("# Add a farewell\n")
+        expect(described_class.resume(env, dir: target, stdout: out)).to be_nil
+        expect(out.string).to include("Nothing to resume in #{target}", "runeforge/inbox/ has no unfinished plans")
+      end
+
+      it "points out plan files that aren't committed yet" do
+        env = build_env_for
+        expect(run_build(env, "Add a greeting", answers: "#{target}\n")).to be(true)
+        File.write(File.join(target, "runeforge/inbox/farewell.md"), "# Add a farewell\n")
+
+        expect(described_class.resume(env, dir: target, stdout: out)).to be_nil
+        expect(out.string).to include("Not in the inbox yet (only plans committed to main count): runeforge/inbox/farewell.md")
+      end
+    end
   end
 
   describe Runeforge::Operator do

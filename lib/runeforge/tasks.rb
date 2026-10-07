@@ -14,6 +14,9 @@ module Runeforge
 
     def find!(id) = find(id) || raise(Error, "unknown task #{id}")
 
+    # The ids of a repository's background (lane-less) tasks, as a dataset for subqueries.
+    def ids_in(repo) = table.where(repo: repo.to_s, lane: nil).select(:id)
+
     def list(status: nil)
       ds = table.order(Sequel.desc(:created_at))
       ds = ds.where(status:) if status

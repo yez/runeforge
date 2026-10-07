@@ -266,12 +266,15 @@ module Runeforge
       guard { exit(1) unless Build.new(env, input:, dir: options[:dir], from: options[:from], rerun: options[:rerun]).run }
     end
 
-    desc "resume", "Continue the last unfinished build in a directory, from the step that didn't finish"
+    desc "resume", "Continue the last unfinished build in a directory, or build its unfinished inbox plans"
     long_desc <<~DESC
       Finds the newest build in DIR that didn't finish, rebuilds its step list from the plan it
       stored, skips the steps that are done (and still in the base branch) and builds the rest.
       A step that failed is planned again from scratch. If you fixed it yourself, record that
       first with `runeforge task mark-done TASK --sha SHA`.
+
+      With no unfinished build, it builds the unfinished plans committed to the project's
+      runeforge/inbox/ in the foreground, as `runeforge up` would, until none is running or queued.
     DESC
     option :dir, aliases: "-d", required: true, desc: "The project directory"
     option :run, desc: "The run to continue (its id or lane), instead of the newest unfinished one"

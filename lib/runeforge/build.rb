@@ -56,8 +56,6 @@ module Runeforge
       raise Error, "no runeforge builds in #{directory}; start one with `runeforge build FILE --dir #{dir}`" unless repo
 
       runs = BuildProgress.new(env, repo[:name]).runs
-      raise Error, "no runeforge builds in #{directory}; start one with `runeforge build FILE --dir #{dir}`" if runs.empty?
-
       chosen =
         if run
           runs.reverse.find { |r| [r[:id], r[:lane], r[:lane].delete_prefix("fg-")].include?(run) } ||
@@ -65,10 +63,8 @@ module Runeforge
         else
           runs.reverse.find { |r| !r[:finished] }
         end
-      if chosen.nil?
-        stdout.puts "Nothing to resume in #{directory}: the last build (#{runs.last[:id]}) finished every step."
-        return nil
-      end
+      # With no build left unfinished, the plans waiting in the project's inbox are next.
+      return resume_inbox(env, repo[:name], directory, runs, stdout) if chosen.nil?
       raise Error, "can't resume #{chosen[:id]}: its plan isn't stored on its tasks" unless chosen[:plan]
 
       if chosen[:live]
@@ -86,7 +82,34 @@ module Runeforge
       same_plan = ->(r) { r[:plan] && r[:plan].steps.map(&:key) == chosen[:plan].steps.map(&:key) }
       others = runs.reject { |r| r[:finished] || r.equal?(chosen) || same_plan.call(r) }
       stdout.puts "  Other unfinished runs here: #{others.map { |r| r[:id] }.join(', ')} (pick one with --run)" if others.any?
+      if InboxRun.enabled?(env)
+        waiting = Inbox.new(env).queue(repo[:name]).select { |p| Inbox::ACTIVE.include?(p[:status]) }
+        stdout.puts "  Inbox: #{waiting.size} unfinished plan#{'s' unless waiting.size == 1} (resume again after this build to build them)" if waiting.any?
+      end
       new(env, input: nil, dir: directory, resume: chosen, from:, stdin:, stdout:)
+    end
+
+    # The InboxRun for the repository's unfinished inbox plans, or nil (saying why) when there
+    # are none.
+    def self.resume_inbox(env, repo, directory, runs, stdout)
+      if InboxRun.enabled?(env)
+        inbox = InboxRun.new(env, repo:, directory:, stdout:)
+        return inbox if inbox.pending.any?
+
+        loose = inbox.uncommitted
+        if loose.any?
+          base = env.repos.fetch(repo)[:base_branch]
+          stdout.puts "Not in the inbox yet (only plans committed to #{base} count): #{loose.join(', ')}"
+        end
+      end
+      if runs.empty?
+        raise Error, "nothing to resume in #{directory}: no runeforge builds and no unfinished plans in #{Inbox::INBOX}/; " \
+                     "start one with `runeforge build FILE --dir #{directory}`"
+      end
+
+      stdout.puts "Nothing to resume in #{directory}: the last build (#{runs.last[:id]}) finished every step" \
+                  "#{InboxRun.enabled?(env) ? " and #{Inbox::INBOX}/ has no unfinished plans" : ''}."
+      nil
     end
 
     # Returns true when every step finished.
@@ -382,8 +405,10 @@ module Runeforge
       true
     end
 
-    # One line per message, or nil to stay quiet.
-    def describe(msg)
+    def describe(msg) = self.class.describe(msg, merging: merging?)
+
+    # One line per message, or nil to stay quiet. Also used by InboxRun.
+    def self.describe(msg, merging:)
       payload = msg.payload
       sha = msg.commit_sha.to_s[0, 7]
       case msg.type
@@ -404,7 +429,7 @@ module Runeforge
       when "review.verdict"
         verdict = payload["approved"] ? "✓ locked tests untouched" : "✗ #{Array(payload['reasons']).join('; ')}"
         [verdict, *Array(payload["notes"]).map { |note| "  note: #{note}" }].join("\n  ")
-      when "integrate.request" then merging? ? "· merging" : "· updating the branch"
+      when "integrate.request" then merging ? "· merging" : "· updating the branch"
       when "integrate.done"
         line = payload["merged"] ? "✓ merged into #{payload['base']}" : "✓ branch #{payload['branch']} updated"
         line += " (#{payload['pr_url']})" if payload["pr_url"]
@@ -469,6 +494,8 @@ module Runeforge
 
     def merging? = !@env.manual_merge?(@registered)
 
-    def plural(count, word) = "#{count} #{word}#{'s' unless count == 1}"
+    def plural(count, word) = self.class.plural(count, word)
+
+    def self.plural(count, word) = "#{count} #{word}#{'s' unless count == 1}"
   end
 end

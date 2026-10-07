@@ -27,6 +27,29 @@ RSpec.describe Runeforge::Worker do
       expect(env.tasks.find!("T-1")[:status]).to eq("cancelled")
     end
 
+    it "gives the message back, not a result, when interrupted to run again later" do
+      env = build_env("agent" => { "command" => "sh #{fake_agent(plan: 'sleep 30', code: 'true')}" })
+      start_task(env)
+      worker = described_class.new(env, roles: ["planner"])
+
+      interrupter = Thread.new { sleep 1; worker.interrupt(release: true) }
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      expect(worker.work_once).to be(true)
+      interrupter.join
+
+      expect(elapsed(started)).to be < 10
+      expect(messages.where(type: %w[plan.done plan.failed]).count).to eq(0)
+      expect(messages.where(type: "plan.request").first)
+        .to include(state: "pending", last_error: "interrupted from the terminal", delivery_count: 0)
+    end
+
+    it "only claims its repository's work when given one" do
+      env = build_env
+      start_task(env)
+      expect(described_class.new(env, roles: ["planner"], repo: "other").work_once).to be(false)
+      expect(messages.where(type: "plan.request").first[:state]).to eq("pending")
+    end
+
     it "gives the message back when the role handler crashes" do
       env = build_env
       start_task(env)

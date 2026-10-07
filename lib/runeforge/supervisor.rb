@@ -17,12 +17,14 @@ module Runeforge
     LLM_COMMANDS = %w[plan.request code.request].freeze
     PLAN_ATTEMPTS = 2
 
-    attr_reader :env, :mailbox, :lane
+    attr_reader :env, :mailbox, :lane, :repo
 
-    # With a lane, handles only that foreground run's results.
-    def initialize(env, id: "supervisor@#{Socket.gethostname}:#{Process.pid}", lane: nil)
+    # With a lane, handles only that foreground run's results; with a repo, only that
+    # repository's background tasks and inbox (`runeforge resume` building its inbox).
+    def initialize(env, id: "supervisor@#{Socket.gethostname}:#{Process.pid}", lane: nil, repo: nil)
       @env = env
       @lane = lane
+      @repo = repo
       @mailbox = env.mailbox(id)
     end
 
@@ -38,7 +40,7 @@ module Runeforge
       prune_events
       poll_inbox
       handled = 0
-      while (msg = mailbox.claim(Runeforge.recipient(lane, "supervisor")))
+      while (msg = mailbox.claim(Runeforge.recipient(lane, "supervisor"), task_ids: repo && env.tasks.ids_in(repo)))
         handle(msg)
         handled += 1
       end
@@ -47,14 +49,18 @@ module Runeforge
 
     PRUNE_EVERY = 600
 
-    # Background supervisors turn committed inbox plans into tasks (see Inbox). Foreground runs
-    # (with a lane) only handle their own steps.
+    # Background supervisors turn committed inbox plans into tasks (see Inbox), one repository's
+    # with a repo. Foreground runs (with a lane) only handle their own steps.
     def poll_inbox
       return if lane || !env.config.dig("inbox", "enabled")
       return if @inbox_at && Runeforge.now - @inbox_at < env.config.dig("inbox", "poll_seconds").to_f
 
       @inbox_at = Runeforge.now
+      return Inbox.new(env).poll_repo(repo) if repo
+
       Inbox.new(env).poll.each { |error| warn "runeforge inbox: #{error}" }
+    rescue Error => e # from poll_repo; #poll collects its errors
+      warn "runeforge inbox: #{repo}: #{e.message}"
     end
 
     # Drops dashboard events older than events.retention_hours, at most every PRUNE_EVERY seconds.
@@ -121,7 +127,7 @@ module Runeforge
         return replan!(stuck) if stuck && replans < REPLANS && !budget_exhausted
 
         reason = stuck || budget_exhausted || limit
-        return fail!("#{reason}. Last feedback: #{text[0, 500]}") if reason
+        return fail!("#{reason}. Last feedback: #{last_feedback(feedback)}") if reason
 
         send_to(:coder, "code.request", sha: task[:head_sha], feedback: text)
       end
@@ -300,6 +306,15 @@ module Runeforge
         return "" if warnings.empty?
 
         "Compiler warnings from the last test run (fix these too):\n#{warnings.map { |w| "- #{w}" }.join("\n")}"
+      end
+
+      # For a failure reason: what went wrong, then the end of its output (where a test run's
+      # failure is), not the middle of a long log.
+      def last_feedback(feedback, bytes: 500)
+        reason = feedback.is_a?(Hash) ? feedback["reason"].to_s : ""
+        rest = feedback_text(feedback).delete_prefix(reason).strip
+        rest = "…#{rest.byteslice(-bytes, bytes).scrub}" if rest.bytesize > bytes
+        [reason, rest].reject(&:empty?).join(": ")
       end
 
       def feedback_text(feedback)

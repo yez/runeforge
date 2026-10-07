@@ -6,16 +6,18 @@ module Runeforge
   # Claims commands for its roles, runs the role handler and records the result. A heartbeat
   # thread keeps the lease alive and kills the sandbox if the lease or the task goes away.
   class Worker
-    attr_reader :env, :roles, :id, :mailbox, :lane
+    attr_reader :env, :roles, :id, :mailbox, :lane, :repo
 
-    # With a lane, works only on that foreground run's messages.
-    def initialize(env, roles:, id: nil, lane: nil)
+    # With a lane, works only on that foreground run's messages; with a repo, only on that
+    # repository's background tasks (`runeforge resume` building its inbox).
+    def initialize(env, roles:, id: nil, lane: nil, repo: nil)
       @env = env
       @roles = Array(roles).map(&:to_s)
       unknown = @roles - Roles.names
       raise Error, "unknown roles: #{unknown.join(', ')} (known: #{Roles.names.join(', ')})" if unknown.any?
 
       @lane = lane
+      @repo = repo
       @id = id || "#{@roles.join('+')}@#{Socket.gethostname}:#{Process.pid}"
       @mailbox = env.mailbox(@id)
     end
@@ -38,13 +40,17 @@ module Runeforge
       @announced = false
     end
 
-    # Kills whatever sandbox is running right now (used for Ctrl-C in the foreground).
-    def interrupt = @sandbox&.kill
+    # Kills whatever sandbox is running right now (used for Ctrl-C in the foreground). release:
+    # the killed run isn't a result; its message goes back to the queue to run again.
+    def interrupt(release: false)
+      @interrupted = release
+      @sandbox&.kill
+    end
 
     # Handles at most one message. Returns true if it did any work.
     def work_once
       announce
-      msg = mailbox.claim(roles.map { |role| Runeforge.recipient(lane, role) })
+      msg = mailbox.claim(roles.map { |role| Runeforge.recipient(lane, role) }, task_ids: repo && env.tasks.ids_in(repo))
       return false unless msg
 
       process(msg)
@@ -60,6 +66,8 @@ module Runeforge
       heartbeat = start_heartbeat(msg, sandbox)
       role = Runeforge.role_of(msg.recipient)
       outcome = (env.dry_run? ? DryRun.fetch(role) : Roles.fetch(role)).call(env, msg, sandbox)
+      return mailbox.release(msg, error: "interrupted from the terminal", counted: false) if @interrupted
+
       mailbox.complete(msg, **outcome)
     rescue Mailbox::LeaseLost
       # Reclaimed or cancelled while we worked; someone else owns the message now.
@@ -68,6 +76,7 @@ module Runeforge
       mailbox.release(msg, error: "#{e.class}: #{e.message}")
     ensure
       @sandbox = nil
+      @interrupted = false
       heartbeat&.kill
       beat
     end
