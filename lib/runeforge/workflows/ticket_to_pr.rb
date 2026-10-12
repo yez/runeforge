@@ -25,6 +25,7 @@ module Runeforge
       # A plan Runeforge rejected for something the planner can fix (its test command runs no
       # tests, no test file matches test_globs, ...) goes back to it once with the reason.
       on "plan.failed" do |task, msg|
+        learn("plan", msg.payload["reason"]) if msg.payload["retryable"]
         if msg.payload["retryable"] && plan_requests < Supervisor::PLAN_ATTEMPTS
           send_to :planner, "plan.request", sha: task[:base_sha], input: plan_input, feedback: msg.payload["reason"]
         else

@@ -42,8 +42,10 @@ RSpec.describe Runeforge::PlanFile do
 end
 
 RSpec.describe Runeforge::PlanFile, "plans organized by headings" do
+  let(:roadmap) { File.read(File.expand_path("../fixtures/wordreel_roadmap.md", __dir__)) }
+
   it "makes each step heading one step, bullets included (the WordReel roadmap)" do
-    plan = described_class.parse(File.read(File.expand_path("../fixtures/wordreel_roadmap.md", __dir__)))
+    plan = described_class.parse("---\nsteps: each\n---\n#{roadmap}")
 
     expect(plan.steps.size).to eq(13)
     expect(plan.steps.first.title).to eq("Step 1: Project Setup & Viewport")
@@ -75,5 +77,42 @@ RSpec.describe Runeforge::PlanFile, "plans organized by headings" do
   it "keeps task lists as they were when there are no step headings" do
     plan = described_class.parse("# Greeter\n\n## Notes\n\n- Add a greeting\n- Add a farewell\n")
     expect(plan.steps.map(&:title)).to eq(["Add a greeting", "Add a farewell"])
+  end
+end
+
+RSpec.describe Runeforge::PlanFile, "grouping steps into tasks" do
+  def plan(items, steps: nil)
+    front = steps.nil? ? "" : "---\nsteps: #{steps}\n---\n"
+    described_class.parse("#{front}#{(1..items).map { |n| "- Part #{n}\n" }.join}")
+  end
+
+  it "keeps short plans one task per step and packs longer ones in groups of about three" do
+    expect(plan(3).steps.map(&:title)).to eq(["Part 1", "Part 2", "Part 3"])
+    expect(plan(9).steps.map(&:title)).to eq(["Part 1 (+2 more)", "Part 4 (+2 more)", "Part 7 (+2 more)"])
+    expect(plan(5).steps.map(&:title)).to eq(["Part 1 (+2 more)", "Part 4 (+1 more)"])
+    expect(plan(9).steps.first.body).to eq("Part 1\n\nPart 2\n\nPart 3")
+  end
+
+  it "groups the WordReel roadmap's 13 step headings into 5 tasks" do
+    plan = described_class.parse(File.read(File.expand_path("../fixtures/wordreel_roadmap.md", __dir__)))
+
+    expect(plan.steps.size).to eq(5)
+    expect(plan.steps.first.body).to include("Step 1: Project Setup", "Step 3:")
+  end
+
+  it "follows steps: each and steps: N from the front matter" do
+    expect(plan(9, steps: "each").steps.size).to eq(9)
+    expect(plan(9, steps: 2).steps.map(&:title)).to eq(["Part 1 (+4 more)", "Part 6 (+3 more)"])
+    expect(plan(2, steps: 5).steps.size).to eq(2)
+  end
+
+  it "shortens a long group title to fit" do
+    long = described_class.parse("- #{'x' * 80}\n- b\n- c\n- d\n")
+    expect(long.steps.first.title).to end_with("… (+1 more)").and(have_attributes(size: 72))
+  end
+
+  it "refuses any other steps value" do
+    expect { plan(4, steps: "some") }.to raise_error(Runeforge::Error, /steps in the front matter must be auto, each/)
+    expect { plan(4, steps: 0) }.to raise_error(Runeforge::Error, /steps in the front matter/)
   end
 end

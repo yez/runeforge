@@ -17,12 +17,14 @@ module Runeforge
     LLM_COMMANDS = %w[plan.request code.request].freeze
     PLAN_ATTEMPTS = 2
 
-    attr_reader :env, :mailbox, :lane
+    attr_reader :env, :mailbox, :lane, :repo
 
-    # With a lane, handles only that foreground run's results.
-    def initialize(env, id: "supervisor@#{Socket.gethostname}:#{Process.pid}", lane: nil)
+    # With a lane, handles only that foreground run's results; with a repo, only that
+    # repository's background tasks and inbox (`runeforge resume` building its inbox).
+    def initialize(env, id: "supervisor@#{Socket.gethostname}:#{Process.pid}", lane: nil, repo: nil)
       @env = env
       @lane = lane
+      @repo = repo
       @mailbox = env.mailbox(id)
     end
 
@@ -38,7 +40,7 @@ module Runeforge
       prune_events
       poll_inbox
       handled = 0
-      while (msg = mailbox.claim(Runeforge.recipient(lane, "supervisor")))
+      while (msg = mailbox.claim(Runeforge.recipient(lane, "supervisor"), task_ids: repo && env.tasks.ids_in(repo)))
         handle(msg)
         handled += 1
       end
@@ -47,14 +49,18 @@ module Runeforge
 
     PRUNE_EVERY = 600
 
-    # Background supervisors turn committed inbox plans into tasks (see Inbox). Foreground runs
-    # (with a lane) only handle their own steps.
+    # Background supervisors turn committed inbox plans into tasks (see Inbox), one repository's
+    # with a repo. Foreground runs (with a lane) only handle their own steps.
     def poll_inbox
       return if lane || !env.config.dig("inbox", "enabled")
       return if @inbox_at && Runeforge.now - @inbox_at < env.config.dig("inbox", "poll_seconds").to_f
 
       @inbox_at = Runeforge.now
+      return Inbox.new(env).poll_repo(repo) if repo
+
       Inbox.new(env).poll.each { |error| warn "runeforge inbox: #{error}" }
+    rescue Error => e # from poll_repo; #poll collects its errors
+      warn "runeforge inbox: #{repo}: #{e.message}"
     end
 
     # Drops dashboard events older than events.retention_hours, at most every PRUNE_EVERY seconds.
@@ -117,11 +123,11 @@ module Runeforge
       def retry_or_fail(feedback)
         text = [feedback_text(feedback), warnings_text].reject(&:empty?).join("\n\n")
         limit = task[:attempts] >= task[:max_attempts] && "attempt limit reached (#{task[:attempts]}/#{task[:max_attempts]})"
-        stuck = stuck_on_failed_tests
+        stuck = contested_tests(feedback) || stuck_on_failed_tests
         return replan!(stuck) if stuck && replans < REPLANS && !budget_exhausted
 
         reason = stuck || budget_exhausted || limit
-        return fail!("#{reason}. Last feedback: #{text[0, 500]}") if reason
+        return fail!("#{reason}. Last feedback: #{last_feedback(feedback)}") if reason
 
         send_to(:coder, "code.request", sha: task[:head_sha], feedback: text)
       end
@@ -129,6 +135,7 @@ module Runeforge
       # Discards this step's plan and code and asks the planner again, with what went wrong. The
       # earlier steps' tests stay locked as they were; this step's own tests are the planner's again.
       def replan!(reason)
+        learn("replan", reason)
         update_task(locked_paths: JSON.generate(locks_before_plan), attempts: 0)
         restart_from!(task[:base_sha])
         send_to(:planner, "plan.request", sha: task[:base_sha], input: plan_input, replan: true,
@@ -194,8 +201,16 @@ module Runeforge
       end
 
       def fail!(reason)
+        learn("failed", reason)
         cancel_in_flight!
         update_task(status: "failed", error: reason)
+      end
+
+      # Remembers what went wrong in this step, for the planners of similar steps (see Memory).
+      def learn(kind, text)
+        @env.memory.record(repo: task[:repo], task_id: task[:id], kind:, step: plan_input["title"] || task[:title], text:)
+      rescue Sequel::Error
+        nil # a lesson that can't be saved never stops the task
       end
 
       def complete!(**fields)
@@ -245,7 +260,8 @@ module Runeforge
       def replan_feedback(reason)
         rows = messages_this_round.where(type: %w[code.failed test.result]).order(Sequel.desc(:id)).limit(20).all
         messages = rows.map { |row| Message.from_row(row) }
-        summaries = messages.select { |m| m.type == "code.failed" }.filter_map { |m| m.payload["summary"] }.first(STUCK_AFTER)
+        summaries = messages.select { |m| m.type == "code.failed" }
+                            .filter_map { |m| m.payload["contest"] || m.payload["summary"] }.first(STUCK_AFTER)
         test = messages.find { |m| m.type == "test.result" && m.payload["passed"] == false }
         # Room for the coder's explanations and the test output, which a single feedback_bytes can't hold.
         limit = @env.config.dig("limits", "feedback_bytes") * 3
@@ -258,6 +274,15 @@ module Runeforge
           (test && "## Last test output\n#{test.payload['output_tail'].to_s[-3000..] || test.payload['output_tail']}")
         ].select { |part| part.is_a?(String) }.join("\n\n")
         text.bytesize > limit ? text.byteslice(0, limit).scrub : text
+      end
+
+      # The coder found the locked tests can't pass as written and said why (.runeforge/contest.md),
+      # so the step goes back to the planner now instead of after STUCK_AFTER empty attempts.
+      def contested_tests(feedback)
+        text = feedback.is_a?(Hash) ? feedback["contest"].to_s.strip : ""
+        return nil if text.empty?
+
+        "the coder says the acceptance tests can't pass as written: #{text[0, 1500]}"
       end
 
       # The coder can't change the test command or the locked tests. When it keeps committing
@@ -300,6 +325,15 @@ module Runeforge
         return "" if warnings.empty?
 
         "Compiler warnings from the last test run (fix these too):\n#{warnings.map { |w| "- #{w}" }.join("\n")}"
+      end
+
+      # For a failure reason: what went wrong, then the end of its output (where a test run's
+      # failure is), not the middle of a long log.
+      def last_feedback(feedback, bytes: 500)
+        reason = feedback.is_a?(Hash) ? feedback["reason"].to_s : ""
+        rest = feedback_text(feedback).delete_prefix(reason).strip
+        rest = "…#{rest.byteslice(-bytes, bytes).scrub}" if rest.bytesize > bytes
+        [reason, rest].reject(&:empty?).join(": ")
       end
 
       def feedback_text(feedback)

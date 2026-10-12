@@ -12,6 +12,17 @@ RSpec.describe Runeforge::Adapters do
     expect(build("claude_code", model: "claude-opus-5-5").command).to include("--model claude-opus-5-5")
   end
 
+  it "gives Claude Code its prompt on stdin, never on the command line" do
+    command = build("claude_code").command
+    expect(command).to end_with("< .runeforge/prompt.md")
+    expect(command).not_to include("RUNEFORGE_PROMPT")
+  end
+
+  it "starts Claude Code sessions from a prefix they can share" do
+    expect(build("claude_code").command)
+      .to include("--exclude-dynamic-system-prompt-sections", "--strict-mcp-config", "--tools Read,Write,Edit,Bash,Grep,Glob")
+  end
+
   it "reads Claude Code usage and cost from its JSON output" do
     output = JSON.generate("result" => "done", "total_cost_usd" => 0.123,
                            "usage" => { "input_tokens" => 10, "cache_read_input_tokens" => 5, "output_tokens" => 7 })

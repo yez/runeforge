@@ -38,6 +38,7 @@ agent:
                                        # key can also be RUNEFORGE_<PROVIDER>_API_KEY (e.g. RUNEFORGE_ANTHROPIC_API_KEY)
   oauth_token_env: CLAUDE_CODE_OAUTH_TOKEN   # a Claude subscription token from `claude setup-token`
   max_tool_calls: 200                  # stop a ruby_llm agent run after this many tool calls
+  conversation: step                   # the coder continues the planner's conversation; none: a new one each run
   # pricing: { input_per_mtok: 0, output_per_mtok: 0 }   # dollars per million tokens, for models ruby_llm
   #                                    # can't price; it has no prices for claude-sonnet-5-5 yet
   roles: {}                            # a different model per role, e.g.:
@@ -63,6 +64,14 @@ inbox:
   enabled: true                        # build plans committed to each project's runeforge/inbox/
   poll_seconds: 60
 
+memory:                                # lessons from steps that went wrong, shown to similar steps' planners
+  enabled: true
+  max_lessons: 3
+  # embedding_model: text-embedding-3-small   # match lessons by meaning (needs an embedding provider's key;
+  # embedding_provider: openai               # a Claude subscription can't make embeddings)
+  # embedding_key_env: OPENAI_API_KEY
+  min_similarity: 0.5
+
 dry_run:
   enabled: false                       # true: agents sleep through canned steps instead of calling a model
   min_seconds: 5
@@ -78,6 +87,7 @@ limits:
   max_spec_bytes: 65536
   max_output_bytes: 1000000
   feedback_bytes: 4000
+  max_conversation_bytes: 8000000      # the ruby_llm agent's transcript between runs
 
 git:
   author_name: Runeforge

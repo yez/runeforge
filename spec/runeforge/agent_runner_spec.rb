@@ -69,6 +69,25 @@ RSpec.describe "Runeforge's ruby_llm agent" do
       .to contain_exactly("list_files", "read_file", "write_file", "edit_file", "search", "run_command")
   end
 
+  it "continues a conversation from an earlier run and hands the whole of it on" do
+    earlier = [{ "role" => "user", "content" => "Plan a greeting." },
+               { "role" => "assistant", "content" => "Planned: lib/hello.txt says hi.", "input_tokens" => 900 }]
+    FileUtils.mkdir_p(File.join(workspace, ".runeforge"))
+    File.write(File.join(workspace, ".runeforge/conversation.json"), JSON.generate(earlier))
+    base = serve { { "role" => "assistant", "content" => "Done." } }
+    out, err, status, result = run_agent(base)
+
+    expect(status).to be_success, err
+    expect(out).to include("Continuing a conversation of 2 messages")
+    sent = requests.first["messages"].map { |m| [m["role"], m["content"].is_a?(Array) ? m["content"].map { |c| c["text"] }.join : m["content"]] }
+    expect(sent).to include(["user", "Plan a greeting."], ["assistant", "Planned: lib/hello.txt says hi."],
+                            ["user", "Create lib/hello.txt saying hi"])
+    expect(result).to include("input_tokens" => 100) # only this run's request, not the earlier one's
+    handed_on = JSON.parse(File.read(File.join(workspace, ".runeforge/conversation.out.json")))
+    expect(handed_on.map { |m| m["role"] }).to eq(%w[user assistant user assistant])
+    expect(handed_on.last).to include("content" => "Done.")
+  end
+
   it "keeps the agent inside the workspace and out of .git and .runeforge" do
     FileUtils.mkdir_p(File.join(workspace, ".runeforge"))
     attempts = [{ "path" => "../escape.txt", "content" => "x" }, { "path" => ".runeforge/agent.rb", "content" => "x" },
@@ -81,7 +100,8 @@ RSpec.describe "Runeforge's ruby_llm agent" do
 
     expect(status).to be_success, err
     expect(File.exist?(File.join(tmpdir, "escape.txt"))).to be(false)
-    expect(Dir.children(File.join(workspace, ".runeforge"))).to eq(["spec.md"]) # the planner's spec is allowed
+    # The planner's spec is allowed; the transcript is the runner's own, not a tool's.
+    expect(Dir.children(File.join(workspace, ".runeforge"))).to contain_exactly("spec.md", "conversation.out.json")
     tool_results = requests.last["messages"].select { |m| m["role"] == "tool" }.map { |m| m["content"].to_s }
     expect(tool_results).to include(a_string_including("outside the repository"), a_string_including("not available to the agent"))
   end

@@ -14,13 +14,18 @@ module Runeforge
       def attempt = msg.payload.fetch("attempt", task[:attempts])
 
       def code(workspace, sha)
+        # The coder continues the conversation of the plan it's building (see Conversations).
+        conversation = conversations? ? env.conversations.latest(task[:id]) : nil
         prompt = Prompts.code(task:, attempt:, locked_paths: locked_paths.keys, test_command: repo[:test_command],
                               run_command: repo[:run_command], run_docs_required: repo[:run_docs_required] == true,
-                              feedback: msg.payload["feedback"], apple: apple_toolchain)
-        run = run_agent(workspace, prompt)
+                              feedback: msg.payload["feedback"], apple: apple_toolchain, continuing: continuing?(conversation))
+        run = run_agent(workspace, prompt, conversation:)
         updates = usage_updates(run.usage)
         failure = agent_failure(run)
         return failed(failure, run, updates) if failure
+
+        contest = workspace.read_meta_text("contest.md", max_bytes: CONTEST_BYTES).to_s.strip
+        return failed("the coder contested the acceptance tests", run, updates, contest:) unless contest.empty?
 
         patch = workspace.read_meta("changes.patch", max_bytes: limits["max_patch_bytes"])
         commit = env.committer(task[:repo]).commit(
@@ -36,9 +41,11 @@ module Runeforge
       # Kept so a coder that stops on purpose (e.g. the locked tests contradict each other) can be
       # heard: the supervisor hands it to the planner when the coder is stuck.
       SUMMARY_BYTES = 4000
+      # .runeforge/contest.md: why the locked tests can't pass, for the planner (Prompts.code).
+      CONTEST_BYTES = 16_384
 
       # Runeforge's own files in .runeforge/; anything else there was written by the agent.
-      OWN_META = %w[prompt.md agent.out agent.err changes.patch agent.rb].freeze
+      OWN_META = %w[prompt.md agent.out agent.err changes.patch agent.rb contest.md].freeze
 
       # "Made no changes" when the agent did change files, but only in .runeforge/ (never committed).
       def only_meta_changes(workspace, message)
@@ -52,10 +59,10 @@ module Runeforge
           "the tests and code must not depend on them"
       end
 
-      def failed(reason, run, updates)
+      def failed(reason, run, updates, contest: nil)
         summary = run && agent.adapter.summary(run.output)
         payload = { "attempt" => attempt, "reason" => reason, "log_path" => run&.log_path,
-                    "summary" => summary&.byteslice(0, SUMMARY_BYTES)&.scrub }.compact
+                    "summary" => summary&.byteslice(0, SUMMARY_BYTES)&.scrub, "contest" => contest }.compact
         result("code.failed", payload, task_updates: updates)
       end
     end

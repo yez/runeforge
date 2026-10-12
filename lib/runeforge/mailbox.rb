@@ -34,10 +34,12 @@ module Runeforge
       nil
     end
 
-    def claim(recipients)
+    # task_ids: only messages for these tasks (an array or a dataset selecting ids).
+    def claim(recipients, task_ids: nil)
       recipients = Array(recipients).map(&:to_s)
       transaction do
         ds = messages.where(recipient: recipients, state: "pending").order(:id).limit(1)
+        ds = ds.where(task_id: task_ids) if task_ids
         ds = ds.for_update.skip_locked if DB.postgres?(db)
         row = ds.first
         next nil unless row
@@ -88,11 +90,17 @@ module Runeforge
     end
 
     # Gives a message back after a handler error. Dead-letters it after max_deliveries.
-    def release(msg, error:)
+    # counted: false gives back a delivery that didn't really happen (it was interrupted), so it
+    # can't use up the message's max_deliveries.
+    def release(msg, error:, counted: true)
       transaction do
         row = messages.where(id: msg.id, claimed_by: worker_id, state: "claimed").first
         next false unless row
 
+        unless counted
+          messages.where(id: row[:id]).update(delivery_count: Sequel[:delivery_count] - 1)
+          row = row.merge(delivery_count: row[:delivery_count] - 1)
+        end
         requeue_or_bury(row, error)
         true
       end

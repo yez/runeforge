@@ -65,6 +65,22 @@ RSpec.describe Runeforge::Supervisor do
       expect(messages.where(task_id: "T-1", state: "pending").count).to eq(0)
     end
 
+    it "ends a failure reason with the end of the last output, where the failure is" do
+      create_task(max_attempts: 1)
+      supervisor.tick
+      respond("planner", "plan.done", { "spec" => "", "locked_paths" => {} }, sha: "b" * 40)
+      supervisor.tick
+      respond("coder", "code.done", sha: "c" * 40)
+      supervisor.tick
+      log = "Test Case passed.\n" * 200 + "** BUILD INTERRUPTED **"
+      respond("tester", "test.result", { "passed" => false, "reason" => "tests failed (exit status 143)", "output_tail" => log }, sha: "c" * 40)
+      supervisor.tick
+
+      expect(task[:status]).to eq("failed")
+      expect(task[:error]).to start_with("attempt limit reached (1/1). Last feedback: tests failed (exit status 143): …")
+      expect(task[:error]).to end_with("** BUILD INTERRUPTED **")
+    end
+
     it "fails instead of sending more agent work once the token budget is spent" do
       create_task
       env.tasks.update("T-1", token_budget: 100, tokens_used: 150)

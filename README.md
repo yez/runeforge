@@ -54,10 +54,23 @@ runeforge plan.md -d ~/code/my-app                              # iterate on an 
   branch with `manual_merge: true`); indented lines belong to the item above, checked
   items (`- [x]`) are skipped, and the rest of the file is passed along as context. A file
   without at least two list items, or a prompt, is one step. A failed step stops the run.
+- **Steps per task:** a plan of up to three steps runs one task per step. A longer plan runs its
+  steps in groups of about three (9 steps become 3 tasks), because every task starts new
+  planner and coder sessions that learn the project again. Front matter `steps: each` keeps one
+  task per step; `steps: N` makes at most N tasks.
 - **Each step:** the planner writes a spec, acceptance tests (which become locked) and any
   scaffolding needed to run them, and says in `.runeforge/project.json` how to run the tests,
   how to run the project (`run_command`) and which tools they need. The coder then works until
   the tests pass (up to `max_attempts`).
+- **One conversation per step:** the coder's attempts continue the planner's conversation (Claude
+  Code resumes its session; Runeforge's ruby_llm agent gets its transcript back from the database),
+  so the coder doesn't read the whole project again. A re-plan starts a new one. `agent.conversation:
+  none` gives every run a conversation of its own.
+- **Contested tests:** a coder that finds a locked test can't pass as written says why in
+  `.runeforge/contest.md`, and the step goes straight back to the planner.
+- **Lessons:** what went wrong in a step (a rejected plan, contested or wrong tests, a failed step) is
+  remembered, and the planner of a similar later step sees the closest few as known pitfalls.
+  They're matched by shared words, or by meaning with `memory.embedding_model`.
 - **Runnable results:** an existing project keeps its own launch method; Runeforge records it
   and changes nothing about it. A new project gets a README with a How to run section (npm
   projects an `npm start` script), and the reviewer rejects work whose docs don't contain the
@@ -280,11 +293,13 @@ runeforge/
 - **Order:** plans run one at a time per repository, in the order they arrived on the base
   branch: the position of the commit that added each file, following renames. File names only
   break ties, and file dates are never used.
-- **Plans:** same format as `runeforge plan.md`: one task per unchecked task-list item, each on
-  its own branch and merged before the next; any other file is one task. The last step's merge
+- **Plans:** same format as `runeforge plan.md`: unchecked task-list items become tasks (one per
+  item, or groups of about three in plans longer than three steps; see `steps:`), each on its
+  own branch and merged before the next; any other file is one task. The last step's merge
   also moves the plan to `done/`.
 - **Front matter** (optional): `after: other-plan` waits until that plan is done;
-  `replaces: other-plan` unlocks that plan's acceptance tests; `title`, `max_attempts`.
+  `replaces: other-plan` unlocks that plan's acceptance tests; `steps: auto | each | N` sets
+  how many tasks the steps become; `title`, `max_attempts`.
 - **Changes:** edit a queued plan and it keeps its place; edit a running one and it restarts;
   edit a failed one (for example, check off the items that already merged) to queue it again
   at the back; delete one to drop or cancel it.

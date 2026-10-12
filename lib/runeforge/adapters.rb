@@ -65,6 +65,12 @@ module Runeforge
         text.is_a?(String) && !text.strip.empty? ? text.strip : nil
       end
 
+      # The CLI's session for the run, for CLIs whose sessions can be resumed (see Conversations).
+      def session_id(_output) = nil
+
+      # The session's cost so far as the CLI reports it, for CLIs whose sessions can be resumed.
+      def reported_cost_usd(_output) = nil
+
       # The model as this CLI expects it.
       def model_arg = model
 
@@ -137,12 +143,32 @@ module Runeforge
         data["is_error"] ? data["result"].to_s.strip.then { |text| text.empty? ? nil : text } : nil
       end
 
+      # The built-in tools an agent needs to read, change and test a repository. Leaving out the
+      # rest (web access, subagents, notebooks) keeps every session's tool definitions small.
+      TOOLS = %w[Read Write Edit Bash Grep Glob].freeze
+
+      # Flags that make every session start from the same, cacheable prefix. Moving the per-machine
+      # parts of the system prompt (cwd, git status) into the first message lets one session's
+      # cached system prompt serve the next instead of each writing its own; no MCP servers or
+      # skills from the host's settings join the prompt.
+      STARTUP = "--exclude-dynamic-system-prompt-sections --strict-mcp-config --disable-slash-commands " \
+                "--tools #{TOOLS.join(',')}".freeze
+
       def command
         # Inside a container the container is the permission boundary. On the host (`sandbox: none`,
         # chosen per project) the agent must still run the toolchain (swift test, xcodebuild), which
         # any narrower mode refuses in -p, so it gets the same full access.
-        %(claude -p "$RUNEFORGE_PROMPT" --output-format json --dangerously-skip-permissions#{model_flag})
+        # The prompt goes in on stdin, not as an argument: on the command line it showed up in `ps`,
+        # and an agent stopping its test server with `pkill -f server/index.js` killed itself.
+        # RUNEFORGE_RESUME, when set, is the session to continue (see Conversations).
+        %(claude -p ${RUNEFORGE_RESUME:+--resume "$RUNEFORGE_RESUME"} --output-format json --dangerously-skip-permissions ) +
+          %(#{STARTUP}#{model_flag} < .runeforge/prompt.md)
       end
+
+      def session_id(output) = (last_json(output) || {})["session_id"]
+
+      # A resumed session's total_cost_usd covers the whole session, not just this run.
+      def reported_cost_usd(output) = (last_json(output) || {})["total_cost_usd"]&.to_f
 
       def parse_usage(output)
         data = last_json(output) || {}

@@ -25,8 +25,9 @@ module Runeforge
       # Runeforge inbox
 
       Commit a markdown plan to `inbox/` and Runeforge builds it: plans run one at a time, in the
-      order they arrived on this branch (not by file name). A task list runs one task per unchecked
-      item; any other file is one task. Finished plans move to `done/` with a short summary.
+      order they arrived on this branch (not by file name). A task list's unchecked items become
+      tasks: one per item, or groups of about three in a longer list (`steps:` below); any other
+      file is one task. Finished plans move to `done/` with a short summary.
 
       Optional front matter:
 
@@ -36,6 +37,7 @@ module Runeforge
       after: reports-page      # wait until inbox/reports-page.md is done
       replaces: csv-export-v1  # unlock that plan's acceptance tests, to change or reverse it
       max_attempts: 3
+      steps: each              # one task per item (default auto; or a number: at most N tasks)
       ---
       ```
 

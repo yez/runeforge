@@ -16,6 +16,11 @@
 #   RUNEFORGE_MAX_TOOL_CALLS  stop after this many tool calls (default 200)
 #   RUNEFORGE_PROJECT_GEM_PATH  the project's GEM_PATH, restored for commands the agent runs
 #
+# A conversation from an earlier run (Runeforge's Conversations), if any, is in
+# .runeforge/conversation.json as RubyLLM::Message#to_h hashes; the run continues it. The whole
+# conversation, without the instructions, is written to .runeforge/conversation.out.json after
+# every message, so even a run that is stopped leaves it for the next one.
+#
 # Progress goes to stdout as plain lines; the last line is JSON:
 #   {"result": "...", "input_tokens": n, "output_tokens": n, "cost_usd": x}
 # or, on failure, {"error": "...", ...} with exit status 1.
@@ -30,9 +35,9 @@ require "ruby_llm"
 module RuneforgeAgent
   ROOT = File.realpath(Dir.pwd)
   HIDDEN = %w[.git .runeforge].freeze
-  # The .runeforge/ files the planner is asked to write; the rest of it (this script, the prompt,
+  # The .runeforge/ files the planner and coder are asked to write; the rest of it (this script, the prompt,
   # the output logs) stays out of the agent's reach.
-  META_FILES = %w[.runeforge/spec.md .runeforge/project.json].freeze
+  META_FILES = %w[.runeforge/spec.md .runeforge/project.json .runeforge/contest.md].freeze
   SKIP_DIRS = %w[.git .runeforge node_modules .venv venv __pycache__ vendor/bundle target .next dist build coverage].freeze
   MAX_READ = 200_000
   MAX_OUTPUT = 12_000
@@ -196,6 +201,34 @@ module RuneforgeAgent
 
   TOOLS = [ListFiles, ReadFile, WriteFile, EditFile, Search, RunCommand].freeze
 
+  CONVERSATION_IN = ".runeforge/conversation.json"
+  CONVERSATION_OUT = ".runeforge/conversation.out.json"
+
+  # Loads the conversation an earlier run left, marking its end as a prompt cache boundary so the
+  # replayed history is read from the provider's cache. Returns how many messages it loaded.
+  def restore(session)
+    path = File.join(ROOT, CONVERSATION_IN)
+    return 0 unless File.file?(path)
+
+    messages = JSON.parse(File.read(path)).map { |message| message.transform_keys(&:to_sym) }
+    return 0 if messages.empty?
+
+    session.messages = messages
+    session.cache_until_here
+    messages.size
+  end
+
+  # A transcript that can't be written is only a lost head start for the next run, never a reason
+  # to stop this one.
+  def save(session)
+    list = session.messages.reject { |message| message.role == :system }.map(&:to_h)
+    path = File.join(ROOT, CONVERSATION_OUT)
+    FileUtils.mkdir_p(File.dirname(path))
+    File.write(path, JSON.generate(list))
+  rescue SystemCallError, IOError, JSON::GeneratorError => e
+    $stderr.puts("runeforge: couldn't save the conversation: #{e.message}")
+  end
+
   def configure
     provider = ENV.fetch("RUNEFORGE_PROVIDER", "").strip
     key_var = ENV.fetch("RUNEFORGE_API_KEY_VAR", "").strip
@@ -237,9 +270,14 @@ module RuneforgeAgent
     session = chat
     limit = Integer(ENV.fetch("RUNEFORGE_MAX_TOOL_CALLS", "200"))
     calls = 0
-    session.with_instructions(INSTRUCTIONS).with_tools(*TOOLS)
+    restored = restore(session)
+    # Caching: every turn re-sends the conversation so far, which the provider then reads from
+    # its cache at a fraction of the price instead of charging it as new input.
+    session.with_instructions(INSTRUCTIONS).with_tools(*TOOLS).with_caching
     session.before_tool_call { session.cancel if (calls += 1) > limit }
+    session.after_message { save(session) }
     say "Runeforge agent: #{session.model.id} via #{session.provider.slug}"
+    say "Continuing a conversation of #{restored} messages" if restored.positive?
     begin
       response = session.ask(prompt)
     rescue RubyLLM::CancelledError

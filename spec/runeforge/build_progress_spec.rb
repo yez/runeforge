@@ -2,8 +2,12 @@
 
 RSpec.describe Runeforge::BuildProgress do
   let(:backend) { "sqlite" }
+  # One task per step, so each step's progress can be checked on its own.
   let(:plan_text) do
     <<~MD
+      ---
+      steps: each
+      ---
       # Demo
 
       ### Step 1: Setup

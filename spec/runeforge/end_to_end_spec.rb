@@ -307,6 +307,95 @@ RSpec.describe "Ticket to pull request" do
                                 "the tests and code must not depend on them"))
     end
 
+    it "plans again at once when the coder contests the tests, with its reasons" do
+      code = <<~SH
+        if [ ! -f #{tmpdir}/contested ]; then touch #{tmpdir}/contested; mkdir -p .runeforge
+          echo 'test/greeting_test.sh expects Hello, Runeforge but the spec says Hi' > .runeforge/contest.md
+        else #{Helpers::CODE_GREETING.gsub("\n", '; ')} fi
+      SH
+      env = env_with(code:)
+      create(env)
+      task = drive(env, "T-1", until_status: "done")
+
+      requests = env.tasks.messages("T-1").select { |m| m.type == "plan.request" }
+      expect(requests.map { |m| m.payload["replan"] }).to eq([nil, true])
+      expect(requests.last.payload["feedback"]).to include("expects Hello, Runeforge but the spec says Hi")
+      failed = env.tasks.messages("T-1").select { |m| m.type == "code.failed" }
+      expect(failed.map { |m| m.payload["reason"] }).to eq(["the coder contested the acceptance tests"])
+      expect(task[:merged_sha]).not_to be_nil
+      expect(env.memory.table.where(task_id: "T-1", kind: "replan").get(:text)).to include("the spec says Hi")
+    end
+
+    context "with Claude Code conversations" do
+      # Stands in for `claude -p`: like Claude Code it reports the session and, for a resumed
+      # session, the whole session's cost so far.
+      def claude_env(conversation: "step")
+        script = File.join(tmpdir, "fake_claude.sh")
+        File.write(script, <<~SH)
+          echo "${RUNEFORGE_RESUME:-none}" >> #{tmpdir}/resumed
+          case "$RUNEFORGE_PROMPT" in
+            *"planning agent"*)
+          #{Helpers::PLAN_GREETING}
+              echo '{"type":"result","session_id":"s-1","total_cost_usd":0.10,"usage":{"input_tokens":10,"output_tokens":5}}' ;;
+            *)
+              printf '%s' "$RUNEFORGE_PROMPT" > #{tmpdir}/coder-prompt.md
+          #{Helpers::CODE_GREETING}
+              echo '{"type":"result","session_id":"s-1","total_cost_usd":0.25,"usage":{"input_tokens":10,"output_tokens":5}}' ;;
+          esac
+        SH
+        allow_any_instance_of(Runeforge::Adapters::ClaudeCode).to receive(:command).and_return("sh #{script}")
+        build_env("agent" => { "adapter" => "claude_code", "model" => "claude-sonnet-5-5", "conversation" => conversation })
+          .tap { |env| add_repo(env, url: origin) }
+      end
+
+      it "has the coder continue the planner's session, charging each run only its own cost" do
+        env = claude_env
+        create(env)
+        task = drive(env, "T-1", until_status: "done")
+
+        expect(File.readlines(File.join(tmpdir, "resumed"), chomp: true)).to eq(%w[none s-1])
+        expect(File.read(File.join(tmpdir, "coder-prompt.md"))).to include("Planning is done: Runeforge committed your spec")
+        expect(File.read(File.join(tmpdir, "coder-prompt.md"))).not_to include("## Spec")
+        expect(task[:cost_cents]).to eq(25) # 10 for the plan, then 15 more: not the 25 the session reports again
+        expect(env.conversations.latest("T-1")).to include(session_id: "s-1", reported_cost_usd: 0.25)
+      end
+
+      it "hands the ruby_llm agent's transcript from the planner to the coder through the database" do
+        script = File.join(tmpdir, "fake_ruby_llm.sh")
+        File.write(script, <<~SH)
+          if [ -f .runeforge/conversation.json ]; then cp .runeforge/conversation.json #{tmpdir}/handed.json; fi
+          case "$RUNEFORGE_PROMPT" in
+            *"planning agent"*)
+          #{Helpers::PLAN_GREETING}
+              echo '[{"role":"user","content":"plan"},{"role":"assistant","content":"planned"}]' > .runeforge/conversation.out.json ;;
+            *)
+          #{Helpers::CODE_GREETING}
+              echo '[{"role":"user","content":"plan"},{"role":"assistant","content":"planned"},{"role":"user","content":"code"},{"role":"assistant","content":"coded"}]' > .runeforge/conversation.out.json ;;
+          esac
+          echo '{"input_tokens":100,"output_tokens":20,"cost_usd":0.01}'
+        SH
+        allow_any_instance_of(Runeforge::Adapters::RubyLlm).to receive(:command).and_return("sh #{script}")
+        env = build_env("agent" => { "adapter" => "ruby_llm", "model" => "deepseek/deepseek-chat" }).tap { |e| add_repo(e, url: origin) }
+        create(env)
+        drive(env, "T-1", until_status: "done")
+
+        expect(JSON.parse(File.read(File.join(tmpdir, "handed.json"))).map { |m| m["content"] }).to eq(%w[plan planned])
+        stored = env.conversations.messages(env.conversations.latest("T-1"))
+        expect(stored.map { |m| m["content"] }).to eq(%w[plan planned code coded]) # the coder's run adds only its own
+      end
+
+      it "starts every run afresh with agent.conversation: none" do
+        env = claude_env(conversation: "none")
+        create(env)
+        task = drive(env, "T-1", until_status: "done")
+
+        expect(File.readlines(File.join(tmpdir, "resumed"), chomp: true)).to eq(%w[none none])
+        expect(File.read(File.join(tmpdir, "coder-prompt.md"))).to include("## Spec")
+        expect(task[:cost_cents]).to eq(35)
+        expect(env.conversations.latest("T-1")).to be_nil
+      end
+    end
+
     it "keeps installed dependencies and caches out of the coder's patch" do
       code = <<~SH
         #{Helpers::CODE_GREETING}

@@ -23,6 +23,10 @@ module Runeforge
 
     def repos = (@repos ||= RepoStore.new(db, File.join(home, "repos")))
 
+    def conversations = (@conversations ||= Conversations.new(db, home:))
+
+    def memory = (@memory ||= Memory.new(db, config["memory"]))
+
     def mailbox(worker_id)
       Mailbox.new(db, worker_id:, lease_seconds: config["lease_seconds"], max_deliveries: config["max_deliveries"])
     end
