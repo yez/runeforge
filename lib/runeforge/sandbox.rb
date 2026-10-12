@@ -90,9 +90,11 @@ module Runeforge
         @user = user
       end
 
-      def run(workdir:, script:, env: {}, on_output: nil)
+      # sessions: a host directory kept as the agent's Claude Code session store, so a later run can
+      # resume this one (see Conversations); the container's HOME is otherwise thrown away.
+      def run(workdir:, script:, env: {}, on_output: nil, sessions: nil)
         @id = "runeforge-#{SecureRandom.hex(6)}"
-        Runner.run(argv(workdir, script, env.keys), env:, timeout: @timeout, on_timeout: -> { kill }, on_output:)
+        Runner.run(argv(workdir, script, env.keys, sessions), env:, timeout: @timeout, on_timeout: -> { kill }, on_output:)
       ensure
         @id = nil
       end
@@ -102,7 +104,7 @@ module Runeforge
         system(@runtime, "kill", name, out: File::NULL, err: File::NULL) if name
       end
 
-      def argv(workdir, script, env_names)
+      def argv(workdir, script, env_names, sessions = nil)
         args = [
           @runtime, "run", "--rm", "--name", @id,
           "--network", @network,
@@ -113,6 +115,7 @@ module Runeforge
           "-e", "HOME=/tmp/home",
           "-v", "#{workdir}:/workspace", "-w", "/workspace"
         ]
+        args.push("-v", "#{sessions}:/tmp/home/.claude/projects") if sessions
         # Pass variables by name so their values never appear in the process list.
         env_names.each { |name| args.push("-e", name) }
         args.push(@image, "sh", "-c", script)
@@ -129,7 +132,8 @@ module Runeforge
 
       def id = @pid && "pid-#{@pid}"
 
-      def run(workdir:, script:, env: {}, on_output: nil)
+      # sessions is ignored: on this machine Claude Code keeps its sessions in the real HOME.
+      def run(workdir:, script:, env: {}, on_output: nil, sessions: nil)
         base = ENV.to_h.slice(*PASSTHROUGH)
         Runner.run(["sh", "-c", script], env: base.merge(env), chdir: workdir, timeout: @timeout,
                                          pgroup: true, unsetenv_others: true, on_output:) { |pid| @pid = pid }

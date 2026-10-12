@@ -54,6 +54,9 @@ module Runeforge
       roles = agent["roles"].is_a?(Hash) ? agent["roles"] : {}
       problems << "`agent.roles` must be a mapping of role names to settings" if agent.key?("roles") && !agent["roles"].is_a?(Hash)
       problems += (roles.keys.map(&:to_s) - %w[planner coder]).map { |role| "`agent.roles.#{role}`: only planner and coder use a model" }
+      if agent.key?("conversation") && !CONVERSATION_SCOPES.include?(agent["conversation"].to_s)
+        problems << "`agent.conversation` must be one of #{CONVERSATION_SCOPES.join(', ')}"
+      end
       [["agent", agent], *roles.map { |role, settings| ["agent.roles.#{role}", settings] }].each do |where, settings|
         adapter = settings.is_a?(Hash) && settings["adapter"]
         next unless adapter && !Adapters.names.include?(adapter.to_s)
@@ -70,6 +73,7 @@ module Runeforge
     PROJECT_KEYS = %w[manual_merge merge_method sandbox launch_check].freeze
     MERGE_METHODS = %w[merge squash rebase].freeze
     SANDBOX_MODES = %w[docker podman none].freeze
+    CONVERSATION_SCOPES = %w[step none].freeze
 
     def self.project_problems(projects)
       return ["`projects` must be a mapping of project (repo name, directory or git URL) to settings"] unless projects.is_a?(Hash)
@@ -149,8 +153,24 @@ module Runeforge
         # openai), and how many tool calls one run may make before it's stopped.
         "api_base" => nil,
         "max_tool_calls" => 200,
+        # step: the coder's attempts continue the planner's conversation for the step instead of
+        # starting new ones that learn the project again (Claude Code and the ruby_llm agent; see
+        # Conversations). none: every run starts a new conversation.
+        "conversation" => "step",
         # Per-role overrides of any setting above, e.g. { "planner" => { "model" => "gemini-pro-latest" } }.
         "roles" => {}
+      },
+      # Lessons from steps that went wrong, shown to the planner of a similar step (see Memory).
+      "memory" => {
+        "enabled" => true,
+        "max_lessons" => 3,
+        # Match lessons by meaning instead of shared words: an embedding model with its ruby_llm
+        # provider and the host variable holding that provider's key (e.g. text-embedding-3-small,
+        # openai, OPENAI_API_KEY). A Claude subscription can't make embeddings.
+        "embedding_model" => nil,
+        "embedding_provider" => nil,
+        "embedding_key_env" => nil,
+        "min_similarity" => 0.5
       },
       "limits" => {
         "max_patch_bytes" => 2_000_000,
@@ -158,6 +178,8 @@ module Runeforge
         "max_spec_bytes" => 65_536,
         "max_output_bytes" => 1_000_000,
         "feedback_bytes" => 4_000,
+        # The ruby_llm agent's transcript, as it hands it back for the next run (see Conversations).
+        "max_conversation_bytes" => 8_000_000,
         # The reviewer's launch check (an Apple app's setup + run command, see LaunchCheck).
         "launch_check_seconds" => 600
       },

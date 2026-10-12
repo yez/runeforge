@@ -11,6 +11,20 @@ RSpec.describe Runeforge::Prompts do
                               'a README.md with a "How to run" section', "`npm start` must work", "don't load from file://")
   end
 
+  it "replaces the run conventions with one line once the project's run command is recorded" do
+    prompt = described_class.plan(task:, input: { "title" => "Greet" }, test_globs: ["test/**/*"], test_command: "",
+                                  run_command: "npm start")
+    expect(prompt).to include("## How it runs\nThe project runs with `npm start`. Keep that working", "## Tests that can pass")
+    expect(prompt).not_to include("First find how the project already runs")
+  end
+
+  it "shows the planner pitfalls from earlier steps, and nothing when there are none" do
+    pitfalls = [{ step: "Step 2: API", text: "the test command ran\nno tests" }]
+    prompt = described_class.plan(task:, input: { "title" => "Greet" }, test_globs: [], test_command: "", pitfalls:)
+    expect(prompt).to include("## Known pitfalls in this project", "- (Step 2: API) the test command ran no tests")
+    expect(described_class.plan(task:, input: {}, test_globs: [], test_command: "")).not_to include("Known pitfalls")
+  end
+
   it "tells the planner how to run Node tests, and why its previous plan was rejected" do
     prompt = Runeforge::Prompts.plan(task: { id: "T-1" }, input: { "title" => "Snake" }, test_globs: ["test/**/*"], test_command: nil,
                                      feedback: "the test command `node --test test/` didn't run the acceptance tests")

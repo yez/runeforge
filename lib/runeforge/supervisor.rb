@@ -123,7 +123,7 @@ module Runeforge
       def retry_or_fail(feedback)
         text = [feedback_text(feedback), warnings_text].reject(&:empty?).join("\n\n")
         limit = task[:attempts] >= task[:max_attempts] && "attempt limit reached (#{task[:attempts]}/#{task[:max_attempts]})"
-        stuck = stuck_on_failed_tests
+        stuck = contested_tests(feedback) || stuck_on_failed_tests
         return replan!(stuck) if stuck && replans < REPLANS && !budget_exhausted
 
         reason = stuck || budget_exhausted || limit
@@ -135,6 +135,7 @@ module Runeforge
       # Discards this step's plan and code and asks the planner again, with what went wrong. The
       # earlier steps' tests stay locked as they were; this step's own tests are the planner's again.
       def replan!(reason)
+        learn("replan", reason)
         update_task(locked_paths: JSON.generate(locks_before_plan), attempts: 0)
         restart_from!(task[:base_sha])
         send_to(:planner, "plan.request", sha: task[:base_sha], input: plan_input, replan: true,
@@ -200,8 +201,16 @@ module Runeforge
       end
 
       def fail!(reason)
+        learn("failed", reason)
         cancel_in_flight!
         update_task(status: "failed", error: reason)
+      end
+
+      # Remembers what went wrong in this step, for the planners of similar steps (see Memory).
+      def learn(kind, text)
+        @env.memory.record(repo: task[:repo], task_id: task[:id], kind:, step: plan_input["title"] || task[:title], text:)
+      rescue Sequel::Error
+        nil # a lesson that can't be saved never stops the task
       end
 
       def complete!(**fields)
@@ -251,7 +260,8 @@ module Runeforge
       def replan_feedback(reason)
         rows = messages_this_round.where(type: %w[code.failed test.result]).order(Sequel.desc(:id)).limit(20).all
         messages = rows.map { |row| Message.from_row(row) }
-        summaries = messages.select { |m| m.type == "code.failed" }.filter_map { |m| m.payload["summary"] }.first(STUCK_AFTER)
+        summaries = messages.select { |m| m.type == "code.failed" }
+                            .filter_map { |m| m.payload["contest"] || m.payload["summary"] }.first(STUCK_AFTER)
         test = messages.find { |m| m.type == "test.result" && m.payload["passed"] == false }
         # Room for the coder's explanations and the test output, which a single feedback_bytes can't hold.
         limit = @env.config.dig("limits", "feedback_bytes") * 3
@@ -264,6 +274,15 @@ module Runeforge
           (test && "## Last test output\n#{test.payload['output_tail'].to_s[-3000..] || test.payload['output_tail']}")
         ].select { |part| part.is_a?(String) }.join("\n\n")
         text.bytesize > limit ? text.byteslice(0, limit).scrub : text
+      end
+
+      # The coder found the locked tests can't pass as written and said why (.runeforge/contest.md),
+      # so the step goes back to the planner now instead of after STUCK_AFTER empty attempts.
+      def contested_tests(feedback)
+        text = feedback.is_a?(Hash) ? feedback["contest"].to_s.strip : ""
+        return nil if text.empty?
+
+        "the coder says the acceptance tests can't pass as written: #{text[0, 1500]}"
       end
 
       # The coder can't change the test command or the locked tests. When it keeps committing

@@ -168,7 +168,7 @@ RSpec.describe Runeforge::Build do
     it "lists the steps and asks before building more than ten" do
       env = build_env_for
       plan = File.join(tmpdir, "long.md")
-      File.write(plan, "# Big\n\n#{(1..12).map { |n| "- Add part #{n}\n" }.join}")
+      File.write(plan, "---\nsteps: each\n---\n# Big\n\n#{(1..12).map { |n| "- Add part #{n}\n" }.join}")
       expect { run_build(env, plan, answers: "n\n") }.to raise_error(Runeforge::Error, /stopped before building/)
       expect(out.string).to include("12 steps:", " 1. Add part 1", "12. Add part 12", "Build all 12 steps? [y/N]")
       expect(env.tasks.list).to be_empty

@@ -4,7 +4,11 @@ module Runeforge
   module Prompts
     module_function
 
-    def plan(task:, input:, test_globs:, test_command:, locked_paths: [], environment: nil, feedback: nil, apple: nil)
+    # run_command: how the project already runs, once Runeforge has recorded it. Until then the
+    # planner gets the full "How it runs" conventions; afterwards one line, to keep the prompt short.
+    # pitfalls: lessons from earlier steps of this project that went wrong (see Memory).
+    def plan(task:, input:, test_globs:, test_command:, locked_paths: [], environment: nil, feedback: nil, apple: nil,
+             run_command: nil, pitfalls: [])
       sections = ["You are the planning agent for task #{task[:id]}."]
       if environment
         sections << "## Environment\nYou, the coder and the tests all run on #{environment}. Plan only what can be " \
@@ -25,6 +29,10 @@ module Runeforge
       if locked_paths.any?
         sections << "## Existing acceptance tests\nThese are locked from earlier steps. Keep them passing; change them only if this step truly requires it.\n" +
                     locked_paths.map { |path| "- #{path}" }.join("\n")
+      end
+      if pitfalls.any?
+        sections << "## Known pitfalls in this project\nEarlier steps here went wrong like this; don't repeat these mistakes:\n" +
+                    pitfalls.map { |lesson| "- #{lesson[:step] ? "(#{lesson[:step]}) " : ''}#{lesson[:text].gsub(/\s+/, ' ')}" }.join("\n")
       end
       unless feedback.to_s.strip.empty?
         sections << "## Your previous plan was rejected\nRuneforge rejected your last plan for this step (it was discarded; " \
@@ -47,28 +55,7 @@ module Runeforge
              you defined it (see "How it runs" below). Leave both out for a library with nothing to run.
            - tools lists the command-line programs the tests need (e.g. ["node", "npm"]).
 
-        ## How it runs
-        Someone who has just cloned the project must be able to run it.
-        1. First find how the project already runs: its README, package.json scripts, Makefile,
-           Procfile*, bin/dev, justfile, Taskfile, compose.yaml. If it has a way, put that exact
-           command in run_command with "run_command_new": false, and leave it alone: don't add,
-           rename or repurpose scripts, and don't rewrite its instructions.
-        2. Only if it has none (a new project, or nothing launches it yet), define one following
-           the stack's convention, set "run_command_new": true, and make it a requirement in the
-           spec: a README.md with a "How to run" section giving the install step, the run_command
-           exactly, and where to look (URL and port, simulator, terminal). The reviewer rejects
-           work whose README doesn't contain a run_command you defined.
-        Conventions for a command you define:
-        - With a package.json it runs through npm scripts and `npm start` must work, even for a
-          static site ("start": "npx --yes serve ."). Frameworks keep their own scripts:
-          Vite/Next/Nuxt/SvelteKit/Astro `npm run dev`, Angular `npm start`, Expo `npx expo start`.
-        - Pages using <script type="module"> need a server; they don't load from file://.
-        - Otherwise the stack's own command: Flask `flask --app app run`, FastAPI
-          `uvicorn app.main:app --reload`, Django `python manage.py runserver`, Rails `bin/dev`,
-          Go `go run .`, Rust `cargo run`, Spring Boot `./mvnw spring-boot:run`, .NET `dotnet run`,
-          Laravel `php artisan serve`, Phoenix `mix phx.server`, Flutter `flutter run`, Android
-          `./gradlew installDebug`. Servers read PORT with a documented default.
-        - Keep it to one command where you can; put extra steps in setup_command and the README.
+        #{how_it_runs(run_command)}
 
         ## Tests that can pass
         - Acceptance tests exercise the project's own code, in its own language and test framework
@@ -109,12 +96,45 @@ module Runeforge
       sections.join("\n\n")
     end
 
-    def code(task:, attempt:, locked_paths:, test_command:, feedback: nil, run_command: nil, run_docs_required: false, apple: nil)
-      sections = [<<~PROMPT]
-        You are the coding agent for task #{task[:id]}, attempt #{attempt} of #{task[:max_attempts]}.
+    # The "How it runs" section of the planner's prompt (see #plan).
+    def how_it_runs(run_command)
+      unless run_command.to_s.strip.empty?
+        return "## How it runs\nThe project runs with `#{run_command}`. Keep that working; leave run_command and " \
+               "run_command_new out of project.json."
+      end
 
-        ## Spec
-        #{task[:spec].to_s.strip.empty? ? task[:title] : task[:spec]}
+      <<~RUNS.chomp
+        ## How it runs
+        Someone who has just cloned the project must be able to run it.
+        1. First find how the project already runs: its README, package.json scripts, Makefile,
+           Procfile*, bin/dev, justfile, Taskfile, compose.yaml. If it has a way, put that exact
+           command in run_command with "run_command_new": false, and leave it alone: don't add,
+           rename or repurpose scripts, and don't rewrite its instructions.
+        2. Only if it has none (a new project, or nothing launches it yet), define one following
+           the stack's convention, set "run_command_new": true, and make it a requirement in the
+           spec: a README.md with a "How to run" section giving the install step, the run_command
+           exactly, and where to look (URL and port, simulator, terminal). The reviewer rejects
+           work whose README doesn't contain a run_command you defined.
+        Conventions for a command you define:
+        - With a package.json it runs through npm scripts and `npm start` must work, even for a
+          static site ("start": "npx --yes serve ."). Frameworks keep their own scripts:
+          Vite/Next/Nuxt/SvelteKit/Astro `npm run dev`, Angular `npm start`, Expo `npx expo start`.
+        - Pages using <script type="module"> need a server; they don't load from file://.
+        - Otherwise the stack's own command: Flask `flask --app app run`, FastAPI
+          `uvicorn app.main:app --reload`, Django `python manage.py runserver`, Rails `bin/dev`,
+          Go `go run .`, Rust `cargo run`, Spring Boot `./mvnw spring-boot:run`, .NET `dotnet run`,
+          Laravel `php artisan serve`, Phoenix `mix phx.server`, Flutter `flutter run`, Android
+          `./gradlew installDebug`. Servers read PORT with a documented default.
+        - Keep it to one command where you can; put extra steps in setup_command and the README.
+      RUNS
+    end
+
+    # continuing: the coder carries on the conversation the planner (or its previous attempt) had,
+    # so it already knows the project and the spec, and the prompt says what changed instead.
+    def code(task:, attempt:, locked_paths:, test_command:, feedback: nil, run_command: nil, run_docs_required: false, apple: nil,
+             continuing: false)
+      sections = [<<~PROMPT]
+        #{continuing ? continuing_note(task, attempt) : coder_intro(task, attempt)}
 
         ## Acceptance tests (locked)
         These files define "done". You may read them but must not change them; a patch that
@@ -124,8 +144,11 @@ module Runeforge
         ## Your job
         Change the code so the acceptance tests and the rest of the suite pass.
         Run the tests with: `#{test_command}`#{run_section(run_command, docs_required: run_docs_required)}
+        If a locked test can't pass as written (it contradicts the spec, another locked test, or
+        itself), don't work around it and don't spend the attempt: write why, naming the test and
+        the assertion, to `.runeforge/contest.md` and stop. The step then goes back to the planner.
         Do not change anything under `runeforge/` (the project's plan inbox); such changes are rejected.
-        Do not put anything in `.runeforge/`: it's Runeforge's scratch space and is never committed.
+        Do not put anything else in `.runeforge/`: it's Runeforge's scratch space and is never committed.
         Do not commit. Leave your changes in the working tree.
       PROMPT
       sections << "#{apple_section(apple)}\n" if apple
@@ -157,6 +180,22 @@ module Runeforge
           carry on. Runeforge runs the project's run command before merging and rejects work whose app doesn't
           launch and keep running.
       SECTION
+    end
+
+    def coder_intro(task, attempt)
+      "You are the coding agent for task #{task[:id]}, attempt #{attempt} of #{task[:max_attempts]}.\n\n" \
+        "## Spec\n#{task[:spec].to_s.strip.empty? ? task[:title] : task[:spec]}"
+    end
+
+    def continuing_note(task, attempt)
+      what = if attempt.to_i <= 1
+               "Planning is done: Runeforge committed your spec and acceptance tests, and the working directory now " \
+                 "holds that commit (your .runeforge/ notes are gone). You are now the coding agent for this step"
+             else
+               "Runeforge checked your last attempt and it didn't pass (feedback below). The working directory now holds " \
+                 "your latest committed work; anything from a failed attempt that wasn't committed is gone"
+             end
+      "#{what}: attempt #{attempt} of #{task[:max_attempts]} for task #{task[:id]}. Keep to the spec you planned."
     end
 
     def run_section(run_command, docs_required: false)

@@ -93,18 +93,68 @@ module Runeforge
 
       AgentRun = Data.define(:result, :output, :errors, :usage, :log_path)
 
-      def run_agent(workspace, prompt)
+      # conversation: the Conversations row this run continues (or just started), or nil for a run
+      # of its own.
+      def run_agent(workspace, prompt, conversation: nil)
         workspace.write_meta("prompt.md", prompt)
         agent.adapter.files.each { |name, content| workspace.write_meta(name, content) }
         script = format(AGENT_SCRIPT, command: agent.adapter.command)
         # The agent's output goes to files in the workspace; follow them while it runs.
         files = { "stdout" => File.join(workspace.meta_dir, "agent.out"), "stderr" => File.join(workspace.meta_dir, "agent.err") }
-        run = output.follow(files) { sandbox.run(workdir: workspace.path, script:, env: env.agent_key_env(role, project: repo).merge(agent.adapter.run_env)) }
+        run_env = env.agent_key_env(role, project: repo).merge(agent.adapter.run_env)
+        restored = conversation ? hand_over(conversation, workspace, run_env) : []
+        sessions = conversation && agent.adapter.name == "claude_code" ? env.conversations.sessions_dir(conversation) : nil
+        run = output.follow(files) { sandbox.run(workdir: workspace.path, script:, env: run_env, sessions:) }
         output = workspace.read_meta("agent.out", max_bytes: limits["max_output_bytes"]).to_s
         errors = workspace.read_meta("agent.err", max_bytes: limits["max_output_bytes"]).to_s
         log = write_log(self.class.name.split("::").last.downcase,
                         [output, errors, run.stdout, run.stderr].reject(&:empty?).join("\n"))
-        AgentRun.new(result: run, output:, errors:, usage: agent.usage(output), log_path: log)
+        usage = agent.usage(output)
+        usage = keep(conversation, workspace, output, usage, restored) if conversation
+        AgentRun.new(result: run, output:, errors:, usage:, log_path: log)
+      end
+
+      # Conversations (agent.conversation: step) for the agents that can continue one.
+      def conversations? = env.config.dig("agent", "conversation") == "step" && CONVERSING.include?(agent.adapter.name)
+
+      CONVERSING = %w[claude_code ruby_llm].freeze
+
+      # Whether the conversation already has something to continue from.
+      def continuing?(conversation)
+        return false unless conversation
+
+        agent.adapter.name == "claude_code" ? !conversation[:session_id].nil? : env.conversations.messages(conversation).any?
+      end
+
+      # Gives the run the conversation so far: Claude Code's session to resume, or the ruby_llm
+      # agent's transcript in its workspace. Returns the messages handed over.
+      def hand_over(conversation, workspace, run_env)
+        if agent.adapter.name == "claude_code"
+          run_env["RUNEFORGE_RESUME"] = conversation[:session_id] if conversation[:session_id]
+          return []
+        end
+
+        messages = env.conversations.messages(conversation)
+        workspace.write_meta("conversation.json", JSON.generate(messages)) if messages.any?
+        messages
+      end
+
+      # Records what the run added to the conversation, and returns its usage with a resumed Claude
+      # Code session's cost cut down to this run's share.
+      def keep(conversation, workspace, output, usage, restored)
+        if agent.adapter.name == "claude_code"
+          id = agent.adapter.session_id(output)
+          return usage unless id
+
+          added = env.conversations.record_session(conversation, session_id: id, cost_usd: agent.adapter.reported_cost_usd(output))
+          return usage.with(cost_cents: (added * 100).ceil)
+        end
+
+        raw = workspace.read_meta_text("conversation.out.json", max_bytes: limits["max_conversation_bytes"])
+        env.conversations.append(conversation, JSON.parse(raw).drop(restored.size), message_id: msg.id) if raw
+        usage
+      rescue JSON::ParserError, Error, Workspace::UnsafeFile
+        usage # a transcript that can't be read just isn't kept; the next run starts from what was
       end
 
       # Nil when the agent ran cleanly. Otherwise the CLI's own explanation (Claude Code reports

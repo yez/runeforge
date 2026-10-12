@@ -14,6 +14,7 @@ module Runeforge
   #   after: reports-page       # wait until that plan is done
   #   replaces: csv-export-v1   # unlock that plan's acceptance tests
   #   max_attempts: 3
+  #   steps: auto               # how many tasks the steps become (see .group)
   #   ---
   class PlanFile
     Step = Data.define(:title, :body) do
@@ -61,12 +62,16 @@ module Runeforge
         "title" => data["title"]&.to_s&.strip,
         "after" => names.call(data["after"]),
         "replaces" => names.call(data["replaces"]),
-        "max_attempts" => data["max_attempts"]
+        "max_attempts" => data["max_attempts"],
+        "steps" => data["steps"].is_a?(String) ? data["steps"].strip.downcase : data["steps"]
       }
       bad = (meta["after"] + meta["replaces"]).grep_v(NAME)
       raise Error, "not a plan name in the front matter: #{bad.join(', ')}" if bad.any?
       if meta["max_attempts"] && !(meta["max_attempts"].is_a?(Integer) && meta["max_attempts"].positive?)
         raise Error, "max_attempts in the front matter must be a positive whole number"
+      end
+      unless meta["steps"].nil? || %w[auto each].include?(meta["steps"]) || (meta["steps"].is_a?(Integer) && meta["steps"].positive?)
+        raise Error, "steps in the front matter must be auto, each, or a positive whole number"
       end
 
       meta.reject { |_key, value| value.nil? || value == "" }
@@ -137,6 +142,36 @@ module Runeforge
       open
     end
 
+    # With `steps: auto` (the default), plans of up to this many steps run one task per step, and
+    # longer plans run their steps in groups of about this many. Every task is a fresh planner and
+    # coder session that has to learn the project again, so a 9-step plan built as 3 tasks cost
+    # half as much as built as 9, with the same result.
+    AUTO_GROUP = 3
+
+    # Joins consecutive steps into tasks. mode: "auto" (see AUTO_GROUP), "each" (one task per
+    # step), or a whole number N (at most N tasks). Groups are as even as they can be, in order.
+    def self.group(steps, mode)
+      count = case mode
+              when "each" then steps.size
+              when Integer then [mode, steps.size].min
+              else steps.size <= AUTO_GROUP ? steps.size : (steps.size.to_f / AUTO_GROUP).ceil
+              end
+      return steps if count >= steps.size
+
+      size, extra = steps.size.divmod(count)
+      start = 0
+      Array.new(count) do |index|
+        part = steps[start, size + (index < extra ? 1 : 0)]
+        start += part.size
+        next part.first if part.size == 1
+
+        head = part.first.title
+        more = " (+#{part.size - 1} more)"
+        title = head.size + more.size > 72 ? "#{head[0, 71 - more.size]}…#{more}" : "#{head}#{more}"
+        Step.new(title:, body: part.map(&:body).join("\n\n"))
+      end
+    end
+
     def initialize(text, meta, list:)
       @text = text
       @meta = meta
@@ -146,7 +181,7 @@ module Runeforge
       checked = []
       steps = list ? (self.class.heading_steps(text, checked:) || self.class.list_steps(text, checked: checked.clear)) : nil
       @checked_steps = steps.nil? || steps.empty? ? [] : checked
-      @steps = steps.nil? || steps.empty? ? [Step.new(title: @title, body: text.strip)] : steps
+      @steps = steps.nil? || steps.empty? ? [Step.new(title: @title, body: text.strip)] : self.class.group(steps, meta["steps"] || "auto")
     end
 
     def multi_step? = steps.size > 1

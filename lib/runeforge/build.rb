@@ -4,12 +4,12 @@ require "digest"
 
 module Runeforge
   # `runeforge <file|prompt> [--dir DIR]`: builds in the foreground. A markdown task list runs as
-  # one plan/code/test cycle per unchecked item, in order, on one branch. Without --dir it asks
+  # one plan/code/test cycle per unchecked item (or group of items, see PlanFile.group), in order, on one branch. Without --dir it asks
   # for a directory name and creates a new project there.
   class Build
     class DirtyWorkingTree < Error; end
 
-    # A file runs one step per unchecked task-list item; a prompt is one step. See PlanFile.
+    # A file runs one step per unchecked task-list item (grouped in long plans); a prompt is one step. See PlanFile.
     def self.parse(input)
       from_file = File.file?(input.to_s)
       PlanFile.parse(from_file ? File.read(input) : input.to_s, list: from_file, source: from_file ? "file" : "prompt")

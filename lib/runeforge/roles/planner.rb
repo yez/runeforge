@@ -21,10 +21,15 @@ module Runeforge
                                          "platform" => verdict.platform })
         end
 
+        pitfalls = env.memory.pitfalls(repo: task[:repo], query: [input["title"], input["description"]].compact.join("\n"),
+                                       exclude_task: task[:id])
         prompt = Prompts.plan(task:, input:, test_globs:, test_command: repo[:test_command], locked_paths: locked_paths.keys,
                               environment: verdict.environment.description, feedback: msg.payload["feedback"],
-                              apple: apple_toolchain(verdict.platform))
-        run = run_agent(workspace, prompt)
+                              apple: apple_toolchain(verdict.platform), run_command: repo[:run_command],
+                              pitfalls:)
+        # Every plan, a re-plan included, starts a conversation for the coder to continue.
+        conversation = conversations? ? env.conversations.start(task_id: task[:id], repo: task[:repo], adapter: agent.adapter.name) : nil
+        run = run_agent(workspace, prompt, conversation:)
         updates = usage_updates(run.usage)
         failure = agent_failure(run)
         return failed(failure, run, updates) if failure
