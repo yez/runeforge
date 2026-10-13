@@ -180,6 +180,8 @@ module Runeforge
           return "the setup command `#{setup[0, 300]}` #{what}, so no test ran. Fix setup_command; put anything longer " \
                  "than a line or two in a script committed with the plan and run that. Output: #{tail(output, 1500)}"
         end
+        errors = run.exit_code.to_i.zero? ? [] : TestProbe.load_errors(output)
+        return load_failed(errors) if errors.any?
         if (why = TestProbe.nothing_ran(output, run.exit_code))
           return "the test command `#{test_command}` didn't run the acceptance tests (#{why}): #{tail(output, 1500)}"
         end
@@ -190,6 +192,21 @@ module Runeforge
           "the new types and functions to the source (placeholder bodies that return empty or default values; never " \
           "crash or trap) so the suite builds, then run test_command again: the locked tests must pass and each new " \
           "test must fail on its own assertion. Output: #{tail(output.gsub(TestProbe::ANSI, ''), 1500)}"
+      end
+
+      # rspec stops before running anything when a spec file raises while loading, most often by
+      # naming a class the step hasn't built yet (`RSpec.describe Foo::Bar`).
+      def load_failed(errors)
+        shown = errors.first(3).join("\n\n")
+        advice = if shown.match?(/NameError|uninitialized constant/)
+                   " A spec must load before the code it tests exists: describe a class that doesn't exist yet " \
+                     "with a string (`RSpec.describe \"Foo::Bar\"`), and refer to new constants only inside examples."
+                 else
+                   ""
+                 end
+        "rspec couldn't load #{errors.size == 1 ? 'a spec file' : "#{errors.size} spec files"}, which stops the whole " \
+          "run, so no test ran: neither your new tests nor the locked tests from earlier steps.#{advice} " \
+          "Fix it so every new test fails on its own assertion. #{shown}"
       end
 
       # Retryable: a mistake in the plan the planner can fix when told (see the workflow), as

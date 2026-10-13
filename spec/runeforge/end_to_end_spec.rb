@@ -208,6 +208,32 @@ RSpec.describe "Ticket to pull request" do
       expect(task[:attempts]).to eq(0)
     end
 
+    it "shows the planner the load error when a spec file stops rspec, not that no tests ran" do
+      plan = <<~SH
+        #{Helpers::PLAN_GREETING}
+        cat > test/fake_rspec.sh <<'RSPEC'
+        echo "DEPRECATION WARNING: noise"
+        echo "An error occurred while loading ./spec/snapshot_spec.rb."
+        echo "NameError:"
+        echo "  uninitialized constant ResumeBuild"
+        echo "0 examples, 0 failures, 1 error occurred outside of examples"
+        exit 1
+        RSPEC
+        printf '{"test_command": "sh test/fake_rspec.sh"}' > .runeforge/project.json
+      SH
+      env = env_with(code: Helpers::CODE_GREETING, plan:)
+      env.repos.update("demo", test_command: "")
+      create(env)
+      task = drive(env, "T-1", until_status: "failed")
+
+      reason = env.tasks.messages("T-1").find { |msg| msg.type == "plan.failed" }.payload["reason"]
+      expect(reason).to start_with("rspec couldn't load a spec file, which stops the whole run, so no test ran")
+      expect(reason).to include("describe a class that doesn't exist yet with a string",
+                                "An error occurred while loading ./spec/snapshot_spec.rb.\nNameError:\n  uninitialized constant ResumeBuild")
+      expect(reason).not_to include("rspec found no examples", "DEPRECATION")
+      expect(task[:error]).to include("planning failed: rspec couldn't load a spec file")
+    end
+
     it "catches a setup command that isn't valid shell while planning, and plans again" do
       plan = <<~SH
         #{Helpers::PLAN_GREETING}
@@ -386,6 +412,35 @@ RSpec.describe "Ticket to pull request" do
       expect(failed.map { |m| m.payload["reason"] }).to eq(["the coder contested the acceptance tests"])
       expect(task[:merged_sha]).not_to be_nil
       expect(env.memory.table.where(task_id: "T-1", kind: "replan").get(:text)).to include("the spec says Hi")
+    end
+
+    it "keeps the coder's contest when the re-planned plan is rejected and planned once more" do
+      plan = <<~SH
+        n=$(cat #{tmpdir}/plans 2>/dev/null || echo 0); n=$((n + 1)); echo $n > #{tmpdir}/plans
+        printf '%s' "$RUNEFORGE_PROMPT" > #{tmpdir}/plan-prompt-$n.md
+        if [ "$n" = 2 ]; then
+          mkdir -p Sources && printf 'x\\n' > Sources/App.swift
+          printf 'spec\\n' > .runeforge/spec.md
+        else
+          #{Helpers::PLAN_GREETING.gsub("\n", "\n  ")}
+        fi
+      SH
+      code = <<~SH
+        if [ ! -f #{tmpdir}/contested ]; then touch #{tmpdir}/contested; mkdir -p .runeforge
+          echo 'test/greeting_test.sh compares a string to a symbol' > .runeforge/contest.md
+        else #{Helpers::CODE_GREETING.gsub("\n", '; ')} fi
+      SH
+      env = env_with(code:, plan:)
+      create(env)
+      task = drive(env, "T-1", until_status: "done")
+
+      requests = env.tasks.messages("T-1").select { |m| m.type == "plan.request" }
+      expect(requests.map { |m| m.payload["replan"] }).to eq([nil, true, nil])
+      expect(requests.last.payload["feedback"]).to include("the plan has no acceptance tests",
+                                                           "This step is being planned again because of the following",
+                                                           "compares a string to a symbol")
+      expect(File.read(File.join(tmpdir, "plan-prompt-3.md"))).to include("compares a string to a symbol")
+      expect(task[:merged_sha]).not_to be_nil
     end
 
     context "with Claude Code conversations" do

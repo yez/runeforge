@@ -29,6 +29,10 @@ module Runeforge
       [/Compilation (?:error|failed)|Execution failed for task ':[\w:-]*compile\w*'/, "Gradle couldn't compile the tests"],
       [/^Build FAILED\.|: error CS\d{4}:/, "dotnet couldn't build the tests"]
     ].freeze
+    # A spec file that raises while loading stops the whole rspec run ("0 examples, 0 failures,
+    # 1 error occurred outside of examples"). Each error starts with this line.
+    RSPEC_LOAD_ERROR = /^An error occurred while loading (\S+?)\.?$/
+    RSPEC_LOAD_ERROR_END = /^(?:An error occurred while loading |No examples found\.|Finished in |Run options:|Randomized with seed |\d+ examples?, )/
     ANSI = /\e\[[0-9;]*m/
     SETUP_FAILED = "__RUNEFORGE_SETUP_FAILED__"
 
@@ -69,6 +73,17 @@ module Runeforge
       return nil if exit_code.nil? || exit_code.zero? || exit_code == 127
 
       NOTHING_RAN.find { |pattern, _| output.to_s.match?(pattern) }&.last
+    end
+
+    # The errors rspec hit loading spec files, without gem backtrace lines, each up to max bytes;
+    # empty when there were none.
+    def load_errors(output, max: 600)
+      lines = output.to_s.scrub.gsub(ANSI, "").lines(chomp: true)
+      lines.each_index.select { |i| lines[i].match?(RSPEC_LOAD_ERROR) }.map do |start|
+        stop = (start + 1...lines.size).find { |i| lines[i].match?(RSPEC_LOAD_ERROR_END) } || lines.size
+        text = lines[start...stop].reject { |line| line.include?("/gems/") }.join("\n").strip
+        text.bytesize > max ? "#{text.byteslice(0, max).scrub}..." : text
+      end
     end
 
     # Why the tests didn't build, or nil.

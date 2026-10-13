@@ -23,11 +23,16 @@ module Runeforge
       end
 
       # A plan Runeforge rejected for something the planner can fix (its test command runs no
-      # tests, no test file matches test_globs, ...) goes back to it once with the reason.
+      # tests, no test file matches test_globs, ...) goes back to it once with the reason, and with
+      # why the step is being re-planned, if it is.
       on "plan.failed" do |task, msg|
         learn("plan", msg.payload["reason"]) if msg.payload["retryable"]
         if msg.payload["retryable"] && plan_requests < Supervisor::PLAN_ATTEMPTS
-          send_to :planner, "plan.request", sha: task[:base_sha], input: plan_input, feedback: msg.payload["reason"]
+          carried = round_feedback
+          feedback = msg.payload["reason"]
+          feedback = "#{feedback}\n\nThis step is being planned again because of the following, which still applies:\n#{carried}" if carried
+          send_to :planner, "plan.request", sha: task[:base_sha], input: plan_input, feedback:,
+                                            **(carried ? { round_feedback: carried } : {})
         else
           fail!("planning failed: #{msg.payload['reason']}")
         end

@@ -281,6 +281,15 @@ module Runeforge
       end
 
       # What the planner needs to fix: why the coder stopped, in its own words, and the test output.
+      # Why this round's re-plan was asked for (the coder's contest, ...), carried by every plan
+      # request in the round, so a re-planned plan that's rejected and retried isn't written
+      # again without it. Nil when the round didn't start with a re-plan.
+      def round_feedback
+        row = messages_this_round.where(type: "plan.request").order(Sequel.desc(:id)).first
+        payload = row ? Message.from_row(row).payload : {}
+        payload["round_feedback"] || (payload["replan"] ? payload["feedback"] : nil)
+      end
+
       def replan_feedback(reason)
         rows = messages_this_round.where(type: %w[code.failed test.result]).order(Sequel.desc(:id)).limit(20).all
         messages = rows.map { |row| Message.from_row(row) }
