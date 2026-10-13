@@ -79,7 +79,10 @@ RSpec.describe Runeforge::Build do
     def make_project(files = { "README.md" => "hi\n" })
       dir = File.join(tmpdir, "existing")
       FileUtils.mkdir_p(dir)
-      files.each { |name, body| File.write(File.join(dir, name), body) }
+      files.each do |name, body|
+        FileUtils.mkdir_p(File.dirname(File.join(dir, name)))
+        File.write(File.join(dir, name), body)
+      end
       git(dir, "init", "-q", "-b", "main")
       git(dir, "add", "-A")
       git(dir, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-qm", "init")
@@ -424,6 +427,30 @@ RSpec.describe Runeforge::Build do
         expect(described_class.resume(env, dir: target, stdout: out)).to be_nil
         expect(out.string).to include("Not in the inbox yet (only plans committed to main count): runeforge/inbox/farewell.md")
       end
+
+      it "builds the inbox of a project no build has registered, with `build -d` and no input" do
+        env = build_env_for
+        target = make_project("runeforge/inbox/greeting.md" => "# Add a greeting\n")
+
+        inbox = described_class.inbox(env, dir: target, stdout: out)
+        expect(inbox).to be_a(Runeforge::InboxRun)
+        expect(inbox.run).to be(true)
+        expect(out.string).to include("Building the inbox in #{File.realpath(target)}", "Add a greeting (greeting): done")
+        expect(File.read(File.join(target, "lib", "greeting.txt"))).to eq("greeting\n")
+
+        expect(described_class.inbox(env, dir: target, stdout: out)).to be_nil
+        expect(out.string).to include("runeforge/inbox/ has no unfinished plans")
+      end
+
+      it "builds the inbox of a project no build has registered, with `resume -d`" do
+        env = build_env_for
+        target = make_project("runeforge/inbox/greeting.md" => "# Add a greeting\n")
+
+        inbox = described_class.resume(env, dir: target, stdin: StringIO.new, stdout: out)
+        expect(inbox).to be_a(Runeforge::InboxRun)
+        expect(inbox.run).to be(true)
+        expect(out.string).to include("Add a greeting (greeting): done")
+      end
     end
   end
 
@@ -484,6 +511,15 @@ RSpec.describe Runeforge::Build do
 
       _env, build_args = dispatch("-d", "proj", "plan.md")
       expect(build_args).to eq(input: "plan.md", dir: "proj", from: nil, rerun: nil)
+    end
+
+    it "builds the directory's inbox when given -d and no input" do
+      allow(Runeforge::Environment).to receive(:load).and_return(instance_double(Runeforge::Environment))
+      inbox = instance_double(Runeforge::InboxRun, run: true)
+      expect(Runeforge::Build).to receive(:inbox).with(anything, dir: "proj").twice.and_return(inbox)
+      expect(Runeforge::Build).not_to receive(:new)
+      Runeforge::CLI.start(%w[-d proj])
+      Runeforge::CLI.start(%w[build -d proj])
     end
   end
 end

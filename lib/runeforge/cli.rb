@@ -256,14 +256,27 @@ module Runeforge
       finished (matched by each step's text, and only if their work is still in the base branch)
       and starts at the first one that isn't done. `runeforge resume -d DIR` does the same
       without the file.
+
+      With --dir and no INPUT, it builds the unfinished plans committed to the project's
+      runeforge/inbox/ in the foreground, as `runeforge up` would, until none is running or queued.
     DESC
     option :dir, aliases: "-d", desc: "Existing project directory to work in"
     option :from, type: :numeric, desc: "Start at this step (the steps before it must be done, unless --rerun)"
     option :rerun, type: :boolean, desc: "Build every step again, even the ones an earlier run finished"
     def build(input = nil)
+      return build_inbox if input.nil? && options[:dir]
       return help if input.nil?
 
       guard { exit(1) unless Build.new(env, input:, dir: options[:dir], from: options[:from], rerun: options[:rerun]).run }
+    end
+
+    no_commands do
+      def build_inbox
+        guard do
+          inbox = Build.inbox(env, dir: options[:dir])
+          exit(1) if inbox && !inbox.run
+        end
+      end
     end
 
     desc "resume", "Continue the last unfinished build in a directory, or build its unfinished inbox plans"

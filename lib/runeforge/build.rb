@@ -43,16 +43,9 @@ module Runeforge
     # `runeforge resume -d DIR`: continues the newest build in DIR that didn't finish (or the run
     # named by `run`), from the plan it stored. Returns nil when there's nothing to resume.
     def self.resume(env, dir:, run: nil, from: nil, stdin: $stdin, stdout: $stdout)
-      # Registered as build registers it: the repository's top level, symlinks resolved.
-      directory = File.expand_path(dir)
-      raise Error, "#{directory} does not exist" unless File.directory?(directory)
-
-      top = Git.run("rev-parse", "--show-toplevel", dir: directory, allow_failure: true)&.strip
-      directory = File.realpath(top.to_s.empty? ? directory : top)
-      repo = env.repos.list.find do |row|
-        url = row[:url].to_s
-        url.start_with?("/", "~") && File.directory?(File.expand_path(url)) && File.realpath(File.expand_path(url)) == directory
-      end
+      directory, repo = project(env, dir)
+      # A project no build has registered yet can still have plans in its inbox.
+      return resume_inbox(env, register(env, directory), directory, [], stdout) if repo.nil? && run.nil? && inbox_ready?(env, directory)
       raise Error, "no runeforge builds in #{directory}; start one with `runeforge build FILE --dir #{dir}`" unless repo
 
       runs = BuildProgress.new(env, repo[:name]).runs
@@ -87,6 +80,59 @@ module Runeforge
         stdout.puts "  Inbox: #{waiting.size} unfinished plan#{'s' unless waiting.size == 1} (resume again after this build to build them)" if waiting.any?
       end
       new(env, input: nil, dir: directory, resume: chosen, from:, stdin:, stdout:)
+    end
+
+    # `runeforge build -d DIR` with no file or prompt: the InboxRun for the unfinished plans in
+    # DIR's runeforge/inbox/, or nil (saying why) when there are none.
+    def self.inbox(env, dir:, stdout: $stdout)
+      raise Error, "the inbox is turned off (inbox.enabled in the config); give a file or a prompt to build" unless InboxRun.enabled?(env)
+
+      directory, repo = project(env, dir)
+      raise Error, "#{directory} is not a git repository with commits; its inbox only reads committed plans" unless repo || inbox_ready?(env, directory)
+
+      name = repo ? repo[:name] : register(env, directory)
+      inbox = InboxRun.new(env, repo: name, directory:, stdout:)
+      return inbox if inbox.pending.any?
+
+      loose = inbox.uncommitted
+      base = env.repos.fetch(name)[:base_branch]
+      stdout.puts "Not in the inbox yet (only plans committed to #{base} count): #{loose.join(', ')}" if loose.any?
+      stdout.puts "Nothing to build in #{directory}: #{Inbox::INBOX}/ has no unfinished plans. " \
+                  "Give a file or a prompt: runeforge build FILE --dir #{dir}"
+      nil
+    end
+
+    # DIR as build registers it (the repository's top level, symlinks resolved) and its registered
+    # repository, or nil when no build has registered it.
+    def self.project(env, dir)
+      directory = File.expand_path(dir)
+      raise Error, "#{directory} does not exist" unless File.directory?(directory)
+
+      top = Git.run("rev-parse", "--show-toplevel", dir: directory, allow_failure: true)&.strip
+      directory = File.realpath(top.to_s.empty? ? directory : top)
+      repo = env.repos.list.find do |row|
+        url = row[:url].to_s
+        url.start_with?("/", "~") && File.directory?(File.expand_path(url)) && File.realpath(File.expand_path(url)) == directory
+      end
+      [directory, repo]
+    end
+
+    # An unregistered directory's inbox can be read once it's a git repository with a commit on a branch.
+    def self.inbox_ready?(env, directory)
+      InboxRun.enabled?(env) && Git.run("rev-parse", "--verify", "--quiet", "HEAD", dir: directory, allow_failure: true) &&
+        current_branch(directory)
+    end
+
+    def self.current_branch(path) = Git.run("symbolic-ref", "--quiet", "--short", "HEAD", dir: path, allow_failure: true)&.strip
+
+    # One registered repo per directory; the name is stable, so later runs reuse its test command.
+    def self.register(env, directory)
+      name = "#{slug(File.basename(directory)).then { |s| s.empty? ? 'project' : s }}-#{Digest::SHA256.hexdigest(directory)[0, 6]}"
+      existing = env.repos.table.where(name:).first || {}
+      env.repos.add(name:, url: directory, base_branch: current_branch(directory),
+                    test_command: existing[:test_command].to_s, setup_command: existing[:setup_command],
+                    image: existing[:image])
+      name
     end
 
     # The InboxRun for the repository's unfinished inbox plans, or nil (saying why) when there
@@ -242,19 +288,11 @@ module Runeforge
       git("-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "Initial commit", dir: path, env: identity)
     end
 
-    def current_branch(path) = Git.run("symbolic-ref", "--quiet", "--short", "HEAD", dir: path, allow_failure: true)&.strip
+    def current_branch(path) = self.class.current_branch(path)
 
     # --- repository and branch ---------------------------------------------------------------
 
-    # One registered repo per directory; the name is stable, so later runs reuse its test command.
-    def register(directory)
-      name = "#{self.class.slug(File.basename(directory)).then { |s| s.empty? ? 'project' : s }}-#{Digest::SHA256.hexdigest(directory)[0, 6]}"
-      existing = @env.repos.table.where(name:).first || {}
-      @env.repos.add(name:, url: directory, base_branch: current_branch(directory),
-                     test_command: existing[:test_command].to_s, setup_command: existing[:setup_command],
-                     image: existing[:image])
-      name
-    end
+    def register(directory) = self.class.register(@env, directory)
 
     def unique_branch(directory, repo)
       base = "runeforge/#{self.class.slug(@input.title).then { |s| s.empty? ? 'build' : s }}"
