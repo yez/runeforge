@@ -442,6 +442,18 @@ RSpec.describe Runeforge::Build do
         expect(out.string).to include("runeforge/inbox/ has no unfinished plans")
       end
 
+      it "migrates a database older than the inbox's tables before building it" do
+        env = build_env_for
+        target = make_project("runeforge/inbox/greeting.md" => "# Add a greeting\n")
+        env.db.drop_table(:runeforge_lessons)
+        env.db[Runeforge::DB::SCHEMA_TABLE].update(version: 8)
+
+        inbox = described_class.inbox(env, dir: target, stdout: out)
+        expect(inbox.run).to be(true)
+        expect(env.db.table_exists?(:runeforge_lessons)).to be(true)
+        expect(out.string).to include("Add a greeting (greeting): done")
+      end
+
       it "builds the inbox of a project no build has registered, with `resume -d`" do
         env = build_env_for
         target = make_project("runeforge/inbox/greeting.md" => "# Add a greeting\n")

@@ -20,6 +20,8 @@ module Runeforge
 
     # Reads the inbox now and returns its unfinished plans, in queue order.
     def pending
+      # The inbox's tables may be newer than the database (see Setup#prepare, run before building).
+      DB.migrate!(@env.db) unless DB.migrated?(@env.db)
       @inbox.poll_repo(@repo)
       active
     end
@@ -33,6 +35,9 @@ module Runeforge
 
     # Returns true when every plan it found or started finished.
     def run
+      # As a foreground build prepares: credentials, migrations, container runtime, agent image.
+      @env.check_agent_credentials!(project: @env.repos.fetch(@repo))
+      Setup.new(config_path: Config.locate, out: @out).prepare(@env)
       plans = active
       @out.puts "Building the inbox in #{@directory}: #{plans.map { |p| "#{label(p)} (#{p[:status]})" }.join(', ')}"
       seen = plans.map { |p| p[:id] }
