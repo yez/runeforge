@@ -17,7 +17,7 @@ module Runeforge
     # Installed into the image ahead of time, so runs don't download every gem again.
     DEPENDENCY_FILES = %w[Gemfile Gemfile.lock gems.rb gems.locked .ruby-version .tool-versions].freeze
     # Bump when the Runeforge layer changes, so every project image is rebuilt.
-    LAYER_VERSION = 1
+    LAYER_VERSION = 3
     BUNDLE = "/opt/runeforge/bundle"
     # Without the devcontainer CLI, the apt packages that stand in for well-known features.
     FEATURE_PACKAGES = {
@@ -34,7 +34,7 @@ module Runeforge
     # path: devcontainer.json. source: { "image" => ... } or { "dockerfile", "context", "args" }
     # (paths from the project root). main: the compose service agents run as, or nil. notes:
     # what was skipped, to tell the person.
-    attr_reader :path, :source, :main, :services, :env, :features, :files, :notes
+    attr_reader :path, :source, :main, :services, :env, :features, :files, :notes, :user
 
     # read.(path) returns a file's contents (relative to the project root), or nil. Returns nil
     # when the project has no devcontainer.
@@ -60,6 +60,8 @@ module Runeforge
 
       dir = File.dirname(path)
       @features = (config["features"] || {}).keys
+      # Whose login environment the tools are set up in (a devcontainer image's own label says, if this doesn't).
+      @user = (config["remoteUser"] || config["containerUser"])&.to_s
       @env = {}
       if config["dockerComposeFile"]
         compose_source(config, dir)
@@ -131,27 +133,85 @@ module Runeforge
         return [:ok, "#{tag} is present"]
       end
 
-      out.puts "  building #{tag} from #{devcontainer.path} (this takes a few minutes the first time)"
+      log = File.join(env.home, "logs", "devcontainer-#{repo_name}.log").tap { |file| FileUtils.mkdir_p(File.dirname(file)) }
+      File.write(log, "")
+      out.puts "  building #{tag} from #{devcontainer.path} (this takes a few minutes the first time; output in #{log})"
       Dir.mktmpdir("runeforge-devcontainer") do |dir|
         env.repos.export(repo_name, sha:, to: dir)
-        base = devcontainer.build_base(runtime, dir, "#{tag}-base", shell:, out:)
-        devcontainer.build_layer(runtime, dir, base, tag, shell:)
+        base = devcontainer.build_base(runtime, dir, "#{tag}-base", shell:, out:, log:)
+        devcontainer.build_layer(runtime, dir, base, tag, shell:, log:, path: login_path(runtime, base, devcontainer.user, shell))
       end
       stored = devcontainer.to_h.merge("tag" => tag, "defaults" => probe(runtime, tag, shell))
       env.repos.update(repo_name, image: tag, devcontainer: JSON.generate(stored))
+      remove_older(runtime, repo_name, tag, shell)
       devcontainer.notes.each { |note| out.puts "  ! #{note}" }
       [:ok, "built #{tag}"]
     rescue Setup::StepFailed => e
-      [:warning, "#{e.message}; agents use #{env.config.dig('sandbox', 'image')} until it builds"]
+      raise unless devcontainer
+
+      failed(env, repo_name, repo, devcontainer, "#{e.message}#{diagnosis(log)}", out)
+    end
+
+    # Records why the image didn't build, so the planner's advice names it. An image built from an
+    # earlier version of the files stays in use; otherwise there is none.
+    def self.failed(env, repo_name, repo, devcontainer, reason, out)
+      stored = repo[:devcontainer] ? JSON.parse(repo[:devcontainer]) : { "path" => devcontainer.path }
+      env.repos.update(repo_name, devcontainer: JSON.generate(stored.merge("error" => reason)))
+      [:failed, "the image for #{devcontainer.path} didn't build: #{reason}"]
+    end
+
+    # The end of a failed build's log, and what it most likely means.
+    def self.diagnosis(log)
+      lines = log && File.file?(log) ? File.readlines(log, chomp: true).reject { |line| line.strip.empty? } : []
+      cause =
+        if lines.any? { |line| line.match?(/no space left on device|input\/output error/i) }
+          ". Docker ran out of disk space or its storage failed (input/output error): free space on this machine " \
+            "(`df -h`), remove unused images (`docker system prune`), restart Docker, then run again"
+        elsif lines.any? { |line| line.match?(/Cannot connect to the Docker daemon|daemon is not running/i) }
+          ". Docker isn't running; start it and run again"
+        end
+      tail = lines.last(6).map { |line| line.strip[0, 200] }.join("\n    ")
+      "#{cause}#{tail.empty? ? '' : ". Last lines of #{log}:\n    #{tail}"}"
+    end
+
+    # Each version of the devcontainer files is a new image of a few GB; only the newest is used.
+    def self.remove_older(runtime, repo_name, tag, shell)
+      prefix = tag_prefix(repo_name)
+      older = shell.capture(runtime, "images", "--format", "{{.Repository}}:{{.Tag}}", prefix.delete_suffix(":"))
+                   .lines(chomp: true).select { |image| image.start_with?(prefix) } - [tag, "#{tag}-base"]
+      shell.run?(runtime, "rmi", *older) if older.any?
     end
 
     def self.tag_prefix(repo_name) = "runeforge/#{repo_name.to_s.downcase}-dev:"
+
+    MARKER = "__RUNEFORGE_PATH__="
+
+    # The PATH the image's user gets in a login shell: where version managers (mise, rbenv, nvm)
+    # put the project's Ruby and Node, which the image's own PATH often lacks. What the
+    # devcontainer CLI's userEnvProbe does. Nil when it can't be read.
+    def self.login_path(runtime, image, user, shell)
+      user ||= label_user(runtime, image, shell)
+      script = %(command -v bash >/dev/null 2>&1 && exec bash -lic 'printf "\\n#{MARKER}%s\\n" "$PATH"'; ) +
+               %(printf "\\n#{MARKER}%s\\n" "$PATH")
+      found = shell.capture(runtime, "run", "--rm", *(user ? ["--user", user] : []), "--entrypoint", "sh", image, "-c", script)
+      found.lines(chomp: true).reverse.find { |line| line.start_with?(MARKER) }&.delete_prefix(MARKER)&.then { |p| p.empty? ? nil : p }
+    end
+
+    # The remoteUser a devcontainer image records in its devcontainer.metadata label.
+    def self.label_user(runtime, image, shell)
+      label = shell.capture(runtime, "image", "inspect", "--format", '{{index .Config.Labels "devcontainer.metadata"}}', image)
+      Array(JSON.parse(label)).reverse.find { |entry| entry.is_a?(Hash) && entry["remoteUser"] }&.dig("remoteUser")
+    rescue JSON::ParserError
+      nil
+    end
 
     # The image's own PATH and gem path, kept with Runeforge's writable /tmp locations in front
     # (sandbox containers have a read-only root filesystem).
     def self.probe(runtime, tag, shell)
       found = shell.capture(runtime, "run", "--rm", "--entrypoint", "sh", tag, "-c",
                             'printf "%s\n" "$PATH"; ruby -e "print Gem.path.join(%q(:))" 2>/dev/null').lines(chomp: true)
+      raise Setup::StepFailed, "couldn't start a container from #{tag}" if found.empty?
+
       path, gems = found[0].to_s, found[1].to_s
       {
         "PATH" => ["/tmp/gems/bin", "#{BUNDLE}/bin", "/tmp/npm-global/bin", "/tmp/home/.local/bin", path].reject(&:empty?).join(":"),
@@ -162,9 +222,9 @@ module Runeforge
 
     # The project's image, without Runeforge's layer. The devcontainer CLI applies `features`;
     # without it, a plain build skips them (and says so).
-    def build_base(runtime, dir, tag, shell:, out:)
+    def build_base(runtime, dir, tag, shell:, out:, log:)
       if features.any? && shell.which("devcontainer")
-        shell.run!("devcontainer", "build", "--workspace-folder", dir, "--config", File.join(dir, path), "--image-name", tag)
+        shell.run_logged!("devcontainer", "build", "--workspace-folder", dir, "--config", File.join(dir, path), "--image-name", tag, log:)
         return tag
       end
       skipped = features.reject { |feature| feature_packages(feature) }
@@ -173,17 +233,22 @@ module Runeforge
       return source["image"] if source["image"]
 
       args = (source["args"] || {}).flat_map { |name, value| ["--build-arg", "#{name}=#{value}"] }
-      shell.run!(runtime, "build", "-t", tag, "-f", File.join(dir, source["dockerfile"]), *args, File.join(dir, source["context"]))
+      shell.run_logged!(runtime, "build", *plain(runtime), "-t", tag, "-f", File.join(dir, source["dockerfile"]), *args,
+                        File.join(dir, source["context"]), log:)
       tag
     end
 
     # Runeforge's layer: the agent CLIs if the image lacks them, and the project's gems. `dir` is
     # the exported project (a Gemfile may load files and path gems from anywhere in it).
-    def build_layer(runtime, dir, base, tag, shell:)
+    # path: the user's login PATH (see .login_path), set for everything after it. A Gemfile whose
+    # gems don't install fails the build: tests could never run without them.
+    def build_layer(runtime, dir, base, tag, shell:, log:, path: nil)
       dockerfile = File.join(dir, ".runeforge-layer.Dockerfile")
       File.write(dockerfile, <<~DOCKERFILE)
         FROM #{base}
         USER root
+        #{path ? "ENV PATH=#{path}" : ''}
+        #{path ? traverse_step : ''}
         RUN set -e; \\
             if ! command -v node >/dev/null 2>&1; then \\
               apt-get update && apt-get install -y --no-install-recommends nodejs npm && rm -rf /var/lib/apt/lists/*; fi; \\
@@ -192,12 +257,21 @@ module Runeforge
         #{packages_step}
         COPY . /opt/runeforge/app/
         RUN if [ -f /opt/runeforge/app/Gemfile ]; then \\
-              cd /opt/runeforge/app && GEM_HOME=#{BUNDLE} bundle install --jobs 4 \\
-              || echo "runeforge: bundle install failed here; the setup command installs the gems instead"; fi; \\
+              cd /opt/runeforge/app && GEM_HOME=#{BUNDLE} bundle install --jobs 4; fi; \\
             mkdir -p #{BUNDLE} && chmod -R a+rX /opt/runeforge
       DOCKERFILE
-      shell.run!(runtime, "build", "-t", tag, "-f", dockerfile, dir)
+      shell.run_logged!(runtime, "build", *plain(runtime), "-t", tag, "-f", dockerfile, dir, log:)
     end
+
+    # Sandbox runs use this machine's uid, not the image's user, so the directories on PATH (a
+    # version manager's under a private home directory) must let anyone through.
+    def traverse_step
+      'RUN for dir in $(echo "$PATH" | tr ":" " "); do ' \
+        'while [ -n "$dir" ] && [ "$dir" != / ]; do [ -d "$dir" ] && chmod o+x "$dir"; dir=$(dirname "$dir"); done; done'
+    end
+
+    # Docker's build output as plain lines, readable in a log (podman's already is).
+    def plain(runtime) = runtime == "docker" ? ["--progress=plain"] : []
 
     # The apt packages for a feature id ("ghcr.io/rails/devcontainer/features/postgres-client:1"),
     # or nil for one Runeforge doesn't know.

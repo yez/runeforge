@@ -302,6 +302,27 @@ module Runeforge
         exit(1) if build && !build.run
       end
     end
+    desc "doctor", "Check that a project's agents and tests can run, and say what to fix"
+    long_desc <<~DESC
+      Checks DIR's build environment the way its agents will use it: the container runtime, disk
+      space, the project's image (built from its devcontainer if it has one), that a container
+      starts with the language versions the project pins and the agent's program, that its
+      services answer, and the agent's credentials. `runeforge build -d DIR` and `resume -d DIR`
+      run the same check before they start anything.
+    DESC
+    option :dir, aliases: "-d", required: true, desc: "The project directory"
+    def doctor
+      guard do
+        directory, repo = Build.project(env, options[:dir])
+        raise Error, "#{directory} is not a git repository with commits" unless repo || Build.inbox_ready?(env, directory, inbox: false)
+
+        name = repo ? repo[:name] : Build.register(env, directory)
+        Setup.new(config_path:).prepare(env)
+        Doctor.new(env, name, directory:).run!
+        say "Ready: agents and tests can run here."
+      end
+    end
+
     desc "db SUBCOMMAND", "Database commands"
     subcommand "db", DbCommand
 

@@ -43,7 +43,8 @@ module Runeforge
         unless blocked.empty?
           env.repos.update(task[:repo], platform_status: "incompatible", platform_note: "the planner: #{blocked[0, 1500]}",
                                         platform_checked_at: Runeforge.now)
-          return failed("the planner can't build this here: #{blocked[0, 1500]}#{blocked_hint}", run, updates)
+          return failed("incompatible build environment: the planner can't build this here: #{blocked[0, 1500]}#{blocked_hint}",
+                        run, updates)
         end
 
         project = read_project(workspace)
@@ -126,9 +127,13 @@ module Runeforge
       def runtime_fix
         dir = repo[:url].to_s.start_with?("/") ? repo[:url] : "DIR"
         retry_with = "then run `runeforge resume -d #{dir} --retry`"
-        if repo[:devcontainer]
+        devcontainer = repo[:devcontainer] && JSON.parse(repo[:devcontainer])
+        if devcontainer&.dig("error") && !devcontainer["tag"]
+          "the project's devcontainer (#{devcontainer['path']}) didn't build, so the general image was used: " \
+            "#{devcontainer['error'].lines.first.strip}. Fix that, #{retry_with}"
+        elsif devcontainer
           "the sandbox is the project's devcontainer image #{repo[:image]}: add what's missing to " \
-            "#{JSON.parse(repo[:devcontainer])['path']} and commit it, #{retry_with}; or set `sandbox: none` for this " \
+            "#{devcontainer['path']} and commit it, #{retry_with}; or set `sandbox: none` for this " \
             "project under `projects:` in #{Config.locate} to build on this machine"
         else
           "commit a .devcontainer/devcontainer.json with the project's image and services (Runeforge builds it into the " \

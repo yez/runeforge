@@ -473,27 +473,68 @@ RSpec.describe Runeforge::Build do
         expect(out.string).to include("· checking tools: sh", "✓ tools available", "Add a farewell (farewell): done")
       end
 
-      it "retries a plan that failed once the build environment is fixed, without an edit" do
+      # The planner reports it can't build here until `allow` exists (the environment is fixed).
+      def blocked_env
         blocked = "[ -f #{tmpdir}/allow ] || { echo 'No Ruby 3.4.7 here' > .runeforge/blocked.md; exit 0; }\n"
-        env = build_env("agent" => { "command" => "sh #{fake_agent(plan: blocked + plan_script, code: code_script)}" })
-              .tap { |e| e.github = Helpers::FakeGitHub.new(opens_prs: false) }
+        build_env("agent" => { "command" => "sh #{fake_agent(plan: blocked + plan_script, code: code_script)}" })
+          .tap { |e| e.github = Helpers::FakeGitHub.new(opens_prs: false) }
+      end
+
+      def fresh_output
+        out.truncate(0)
+        out.rewind
+      end
+
+      it "keeps a plan waiting while the environment can't build it, then continues it by itself" do
+        env = blocked_env
         target = make_project("runeforge/inbox/greeting.md" => "# Add a greeting\n")
 
         expect(described_class.inbox(env, dir: target, stdout: out).run).to be(false)
-        expect(out.string).to include("the planner can't build this here: No Ruby 3.4.7 here")
-        repo = env.repos.list.first
-        expect(env.repos.fetch(repo[:name])[:platform_status]).to eq("incompatible")
+        expect(out.string).to include("Checking the build environment for", "✓ credentials",
+                                      "the planner can't build this here: No Ruby 3.4.7 here",
+                                      "Add a greeting (greeting): blocked (waiting for the build environment",
+                                      "The build environment needs fixing before these plans can continue")
+        plan = env.db[:runeforge_plans].first
+        expect(plan[:status]).not_to eq("failed")
 
-        out.truncate(0)
-        out.rewind
-        expect(described_class.inbox(env, dir: target, stdout: out)).to be_nil
-        expect(out.string).to include("Add a greeting (greeting) failed: ", "Retry failed plans with --retry")
-
-        FileUtils.touch(File.join(tmpdir, "allow"))
-        inbox = described_class.inbox(env, dir: target, retry_failed: true, stdout: out)
-        expect(env.repos.fetch(repo[:name])[:platform_status]).not_to eq("incompatible")
+        FileUtils.touch(File.join(tmpdir, "allow")) # fixed; no edit, no --retry
+        fresh_output
+        inbox = described_class.inbox(env, dir: target, stdout: out)
         expect(inbox.run).to be(true)
         expect(out.string).to include("(task greeting-p1-r2)", "Add a greeting (greeting): done")
+      end
+
+      it "fails a plan that still can't build after the environment check passes, saying what to do" do
+        env = blocked_env
+        target = make_project("runeforge/inbox/greeting.md" => "# Add a greeting\n")
+        expect(described_class.inbox(env, dir: target, stdout: out).run).to be(false)
+
+        fresh_output # the check passes (nothing it can see is wrong), but the planner is still blocked
+        expect(described_class.inbox(env, dir: target, stdout: out).run).to be(false)
+        expect(out.string).to include("Add a greeting (greeting): failed (greeting-p1-r2 still can't run here after the " \
+                                      "environment check passed", "Add what it needs to the project's devcontainer")
+      end
+
+      it "stops before anything starts when uncommitted changes would refuse the merge" do
+        env = build_env_for
+        target = make_project("runeforge/inbox/greeting.md" => "# Add a greeting\n", "README.md" => "hi\n")
+        File.write(File.join(target, "README.md"), "changed\n")
+
+        expect { described_class.inbox(env, dir: target, stdout: out) }.to raise_error(Runeforge::Doctor::NotReady)
+        expect(out.string).to include("✗ checkout       main has uncommitted changes (README.md)", "fix: commit or stash them")
+        expect(env.tasks.list).to be_empty
+      end
+
+      it "stops before anything starts when the environment check fails" do
+        env = build_env_for
+        target = make_project("runeforge/inbox/greeting.md" => "# Add a greeting\n")
+        allow(env).to receive(:check_agent_credentials!).and_raise(Runeforge::Error, "The planner has no credentials for x.\n  KEY  an API key")
+
+        expect { described_class.inbox(env, dir: target, stdout: out) }
+          .to raise_error(Runeforge::Doctor::NotReady, /nothing was started and no plan was changed/)
+        expect(out.string).to include("✗ credentials    The planner has no credentials for x.", "fix: KEY  an API key")
+        expect(env.db[:runeforge_plans].count).to eq(0)
+        expect(env.tasks.list).to be_empty
       end
 
       it "shows front matter keys it ignored" do

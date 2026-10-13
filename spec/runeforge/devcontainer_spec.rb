@@ -101,7 +101,12 @@ RSpec.describe Runeforge::Devcontainer do
 
         def initialize = (@commands = [])
         def which(_name) = nil
-        def capture(*cmd) = (@commands << cmd) && "/usr/local/bin:/usr/bin\n/usr/local/bundle\n"
+        def capture(*cmd)
+          @commands << cmd
+          return "runeforge/app-dev:0123456789ab\nruneforge/app-dev:0123456789ab-base\n" if cmd[1] == "images"
+
+          "/usr/local/bin:/usr/bin\n/usr/local/bundle\n"
+        end
 
         def run?(*cmd)
           @commands << cmd
@@ -109,6 +114,17 @@ RSpec.describe Runeforge::Devcontainer do
         end
 
         def run!(*cmd) = (@commands << cmd) && true
+
+        # fail_with: a line the build "prints" before failing.
+        attr_accessor :fail_with
+
+        def run_logged!(*cmd, log:)
+          @commands << cmd
+          return true unless fail_with
+
+          File.write(log, "#{fail_with}\n", mode: "a")
+          raise Runeforge::Setup::StepFailed, "`#{cmd.first(2).join(' ')}` failed"
+        end
       end.new
     end
 
@@ -145,8 +161,32 @@ RSpec.describe Runeforge::Devcontainer do
       expect(stored["defaults"]).to include("GEM_PATH" => "/tmp/gems:/opt/runeforge/bundle:/usr/local/bundle",
                                             "PATH" => start_with("/tmp/gems/bin:").and(end_with(":/usr/local/bin:/usr/bin")))
 
+      expect(shell.commands).to include(["docker", "rmi", "runeforge/app-dev:0123456789ab", "runeforge/app-dev:0123456789ab-base"])
       expect(described_class.ensure_image(env, "app", shell:, out:)).to eq([:ok, "#{tag} is present"])
       expect(shell.commands.count { |cmd| cmd[1] == "build" }).to eq(2)
+    end
+
+    it "stops the environment check when the image doesn't build, saying why and what to do" do
+      env = build_env("sandbox" => { "mode" => "docker" })
+      env.repos.add(name: "app", url: project(rails_files), test_command: "")
+      shell.fail_with = "ERROR: failed to solve: write /var/lib/docker/buildkit/metadata_v2.db: input/output error"
+
+      status, detail = described_class.ensure_image(env, "app", shell:, out: StringIO.new)
+      expect(status).to eq(:failed)
+      expect(detail).to include("didn't build: `docker build` failed. Docker ran out of disk space", "input/output error",
+                                "docker system prune", "Last lines of #{env.home}/logs/devcontainer-app.log")
+      stored = JSON.parse(env.repos.fetch("app")[:devcontainer])
+      expect(stored).to include("path" => ".devcontainer/devcontainer.json", "error" => start_with("`docker build` failed"))
+      expect(stored).not_to include("services") # no services beside the general image
+      expect(env.repos.fetch("app")[:image]).to be_nil
+
+      out = StringIO.new
+      allow(shell).to receive(:which).and_return("/usr/local/bin/docker")
+      allow(shell).to receive(:capture).and_return("28.5.2\n")
+      doctor = Runeforge::Doctor.new(env, "app", directory: File.join(tmpdir, "app"), shell:, out:)
+      expect { doctor.run! }.to raise_error(Runeforge::Doctor::NotReady)
+      expect(out.string).to include("✓ docker", "✗ project image  the image for .devcontainer/devcontainer.json didn't build",
+                                    "fix: docker ran out of disk space or its storage failed")
     end
 
     it "leaves an image the person chose, and skips projects without a devcontainer or a container sandbox" do
@@ -168,7 +208,7 @@ RSpec.describe Runeforge::Devcontainer do
         #!/bin/sh
         echo "$*" >> #{tmpdir}/runtime.log
         if [ "$1" = exec ] && [ ! -f #{tmpdir}/ready ]; then touch #{tmpdir}/ready; exit 1; fi
-        [ "$1" = run ] && [ "$2" != -d ] && echo "DB_HOST=$DB_HOST"
+        [ "$1" = run ] && [ "$2" != -d ] && echo "host DB_HOST=${DB_HOST:-unset} PATH=$PATH"
         exit 0
       SH
       File.chmod(0o755, path)
@@ -181,18 +221,34 @@ RSpec.describe Runeforge::Devcontainer do
       services = [Runeforge::Devcontainer::Service.new(name: "postgres", image: "postgres:17", env: { "POSTGRES_PASSWORD" => "pw" }, healthcheck: nil),
                   Runeforge::Devcontainer::Service.new(name: "cache", image: "example/cache", env: {}, healthcheck: ["CMD", "ping-it"])]
       sandbox = Runeforge::Sandbox::Container.new(runtime:, image: "app:dev", network: "bridge", cpus: 1, memory: "1g", pids: 64,
-                                                  timeout: 30, services:, env: { "DB_HOST" => "postgres" }, name: "rails-app")
+                                                  timeout: 30, services:, name: "rails-app",
+                                                  env: { "DB_HOST" => "postgres", "PATH" => "/opt/app/bin:/usr/bin" })
       result = sandbox.run(workdir: tmpdir, script: "true")
 
-      expect(result.stdout).to eq("DB_HOST=postgres\n")
+      # The container's settings go in by value; the CLI's own PATH stays this machine's.
+      expect(result.stdout).to eq("host DB_HOST=unset PATH=#{ENV['PATH']}\n")
       net = log.first[/network create (\S+)/, 1]
       expect(net).to end_with("-net")
       id = net.delete_suffix("-net")
       expect(log[1]).to start_with("run -d --rm --name #{id}-postgres --network #{net} --network-alias postgres").and end_with("-e POSTGRES_PASSWORD=pw postgres:17")
       expect(log[2]).to include("--network-alias cache", "example/cache")
       expect(log[3..5]).to eq(["exec #{id}-postgres pg_isready -q", "exec #{id}-postgres pg_isready -q", "exec #{id}-cache ping-it"])
-      expect(log[6]).to start_with("run --rm --name #{id} --network #{net} --network-alias rails-app --read-only").and include("-e DB_HOST")
+      expect(log[6]).to start_with("run --rm --name #{id} --network #{net} --network-alias rails-app --read-only").and include("-e DB_HOST=postgres -e PATH=/opt/app/bin:/usr/bin")
       expect(log[7..]).to eq(["rm -f #{id}-postgres #{id}-cache", "network rm #{net}"])
+    end
+
+    it "says the sandbox is unavailable, not that the agent failed, when the runtime is missing or broken" do
+      missing = Runeforge::Sandbox::Container.new(runtime: "no-such-docker", image: "app", network: "bridge", cpus: 1, memory: "1g",
+                                                  pids: 64, timeout: 30)
+      expect { missing.run(workdir: tmpdir, script: "true") }
+        .to raise_error(Runeforge::Sandbox::Unavailable, "`no-such-docker` isn't installed or isn't on PATH")
+
+      broken = File.join(tmpdir, "broken-docker")
+      File.write(broken, "#!/bin/sh\necho 'docker: Error response from daemon: write /var/lib/docker/x: input/output error.' >&2\nexit 125\n")
+      File.chmod(0o755, broken)
+      sandbox = Runeforge::Sandbox::Container.new(runtime: broken, image: "app", network: "bridge", cpus: 1, memory: "1g", pids: 64, timeout: 30)
+      expect { sandbox.run(workdir: tmpdir, script: "true") }
+        .to raise_error(Runeforge::Sandbox::Unavailable, /couldn't start the container: docker: Error response from daemon.*input\/output error/)
     end
 
     it "keeps an offline sandbox's services offline too" do
@@ -220,6 +276,13 @@ RSpec.describe Runeforge::Devcontainer do
       File.write(File.join(dir, ".ruby-version"), "3.3\n")
       expect(Runeforge::Platform.runtime_mismatch(env, { name: "app" }, dir)).to be_nil
       expect(Runeforge::Platform.runtime_mismatch(build_env, { name: "app" }, dir)).to be_nil # no container, no check
+
+      # A container that doesn't start (Docker broken) isn't a version mismatch.
+      File.write(File.join(dir, ".ruby-version"), "3.4.7\n")
+      Runeforge::Platform.instance_variable_set(:@runtimes, nil)
+      allow(probe).to receive(:run).and_return(Runeforge::Sandbox::Result.new(exit_code: 125, stdout: "", stderr: "input/output error", timed_out: false))
+      expect(Runeforge::Platform.runtime_mismatch(env, { name: "app" }, dir)).to be_nil
+      expect(Runeforge::Platform.instance_variable_get(:@runtimes)).to be_empty
     ensure
       Runeforge::Platform.instance_variable_set(:@runtimes, nil)
     end

@@ -22,6 +22,16 @@ module Runeforge
       @operator = operator ? Operator.new(env, input: stdin, output: stdout) : nil
     end
 
+    # Before the inbox is read: the database, the container runtime and a Doctor check of the
+    # project's sandbox. Raises Doctor::NotReady (having printed what to fix) when it can't run.
+    def check!
+      return if @checked
+
+      Setup.new(config_path: Config.locate, out: @out).prepare(@env)
+      Doctor.new(@env, @repo, directory: @directory, out: @out).run!
+      @checked = true
+    end
+
     # Reads the inbox now and returns its unfinished plans, in queue order.
     def pending
       # The inbox's tables may be newer than the database (see Setup#prepare, run before building).
@@ -38,6 +48,12 @@ module Runeforge
       return found if failed.empty?
 
       retried = failed.count do |plan|
+        # check! passed, so a plan that only failed on the environment goes again by itself.
+        if @checked && Inbox.environment_failure?(plan[:reason])
+          @out.puts "#{label(plan)} stopped earlier because the build environment wasn't ready; it is now, so it continues."
+          next @inbox.retry(plan)
+        end
+
         @out.puts "#{label(plan)} failed: #{plan[:reason].to_s.lines.first.to_s.strip[0, 300]}"
         next @inbox.retry(plan) if retry_failed
         next false unless @stdin.respond_to?(:tty?) && @stdin.tty?
@@ -58,9 +74,7 @@ module Runeforge
 
     # Returns true when every plan it found or started finished.
     def run
-      # As a foreground build prepares: credentials, migrations, container runtime, agent image.
-      @env.check_agent_credentials!(project: @env.repos.fetch(@repo))
-      Setup.new(config_path: Config.locate, out: @out).prepare(@env).prepare_project(@env, @repo)
+      check!
       plans = active
       @out.puts "Building the inbox in #{@directory}: #{plans.map { |p| "#{label(p)} (#{p[:status]})" }.join(', ')}"
       seen = plans.map { |p| p[:id] }
@@ -95,7 +109,9 @@ module Runeforge
         task = @env.tasks.find(current)
         # A finished step moves its plan on (or fails it) on the next inbox read.
         next @inbox.poll_repo(@repo) if task.nil? || TERMINAL_STATUSES.include?(task[:status]) || task[:status] == "blocked"
-        next if @operator&.answer(operator_box, "operator", task_ids: @env.tasks.ids_in(@repo)) || @worker.work_once
+        worked = @operator&.answer(operator_box, "operator", task_ids: @env.tasks.ids_in(@repo)) || @worker.work_once
+        break @unavailable = @worker.unavailable if @worker.unavailable
+        next if worked
 
         sleep @env.config["poll_seconds"]
       end
@@ -113,15 +129,23 @@ module Runeforge
 
     def report(ids)
       plans = @inbox.plans.where(id: ids).order(:arrival, :id).all
-      @out.puts(@stopped ? "\nStopped. Inbox:" : "\nInbox:")
+      if @unavailable
+        @out.puts "\nStopped: the sandbox stopped working: #{@unavailable}."
+        @out.puts "Nothing was lost or counted as an attempt: the step picks up where it was when you run " \
+                  "`runeforge build -d #{@directory}` again (`runeforge doctor -d #{@directory}` checks the environment first)."
+      end
+      @out.puts(@stopped || @unavailable ? "\nStopped. Inbox:" : "\nInbox:")
       plans.each { |p| @out.puts "  #{label(p)}: #{p[:status]}#{p[:reason] ? " (#{p[:reason]})" : ''}" }
       if @stopped
         @out.puts "The interrupted step runs again, without using an attempt, when you continue:"
         @out.puts "  runeforge resume -d #{@directory}   (or let `runeforge up` build it)"
+      elsif plans.any? { |p| p[:reason].to_s.start_with?("waiting for the build environment") }
+        @out.puts "The build environment needs fixing before these plans can continue (`runeforge doctor -d #{@directory}` " \
+                  "shows what); then run `runeforge build -d #{@directory}` and they pick up where they stopped."
       elsif plans.any? { |p| Inbox::WAITING.include?(p[:status]) || p[:status] == "unmerged" }
         @out.puts "Plans still waiting are built once what they wait on is done: runeforge inbox"
       end
-      !@stopped && plans.all? { |p| %w[done superseded].include?(p[:status]) }
+      !@stopped && !@unavailable && plans.all? { |p| %w[done superseded].include?(p[:status]) }
     end
   end
 end

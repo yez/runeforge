@@ -19,6 +19,12 @@ module Runeforge
 
       def run!(*cmd) = system(*cmd) || raise(StepFailed, "`#{cmd.join(' ')}` failed")
 
+      # Like run!, with the output appended to `log` instead of the terminal.
+      def run_logged!(*cmd, log:)
+        File.open(log, "a") { |file| file.puts "$ #{cmd.join(' ')}" }
+        system(*cmd, out: [log, "a"], err: %i[child out]) || raise(StepFailed, "`#{cmd.first(2).join(' ')}` failed")
+      end
+
       def which(name)
         ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).map { |dir| File.join(dir, name) }
            .find { |path| File.executable?(path) && !File.directory?(path) }
@@ -75,15 +81,6 @@ module Runeforge
       step("migrations") { migrate }
       step("container runtime") { ensure_runtime }
       step("agent image") { ensure_image }
-      self
-    end
-
-    # Before building in a registered project: the image from its devcontainer, if it has one
-    # (see Devcontainer). A build that fails is a warning; agents use the general image meanwhile.
-    def prepare_project(env, repo_name)
-      @env = env
-      @quiet = true
-      step("project image") { Devcontainer.ensure_image(env, repo_name, shell: @shell, out: @out) }
       self
     end
 

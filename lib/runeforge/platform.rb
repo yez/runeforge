@@ -87,18 +87,28 @@ module Runeforge
       image = project[:image] || env.config.dig("sandbox", "image")
       @runtimes ||= {}
       found = @runtimes[image] ||= Dir.mktmpdir("runeforge-runtimes") do |tmp|
-        ruby, node = env.new_sandbox(image:, project:, services: false).run(workdir: tmp, script: RUNTIME_PROBE).stdout.lines(chomp: true)
+        run = env.new_sandbox(image:, project:, services: false).run(workdir: tmp, script: RUNTIME_PROBE)
+        # A container that didn't start says nothing about the image; the planner's run will say why.
+        return nil unless run.success?
+
+        ruby, node = run.stdout.lines(chomp: true)
         { "ruby" => ruby.to_s.strip, "node" => node.to_s.strip }
       end
-      wrong = pins.filter_map do |tool, version|
+      wrong = version_mismatches(pins, found)
+      return nil if wrong.empty?
+
+      "the project pins #{wrong.join(' and ')}, which the sandbox image #{image} doesn't match"
+    end
+
+    # "ruby 3.4.7 (it has ruby 3.3.12)" for each pinned version `found` ({ "ruby" => "3.3.12" })
+    # doesn't match. A pin matches every version that starts with it: "3.4" matches 3.4.7.
+    def version_mismatches(pins, found)
+      pins.filter_map do |tool, version|
         have = found[tool].to_s
         next if have.split(".").first(version.split(".").size) == version.split(".")
 
         "#{tool} #{version} (it has #{have.empty? ? "no #{tool}" : "#{tool} #{have}"})"
       end
-      return nil if wrong.empty?
-
-      "the project pins #{wrong.join(' and ')}, which the sandbox image #{image} doesn't match"
     end
 
     # Where a project's agents and tests run, and which toolchains are there.

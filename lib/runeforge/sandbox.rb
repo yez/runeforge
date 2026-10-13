@@ -2,6 +2,10 @@
 
 module Runeforge
   module Sandbox
+    # The sandbox itself can't run: the container CLI is missing, its daemon is down or broken, a
+    # service won't start. Nothing an agent did, so it's never retried as a failed attempt.
+    class Unavailable < Error; end
+
     Result = Data.define(:exit_code, :stdout, :stderr, :timed_out) do
       def success? = exit_code.zero? && !timed_out
     end
@@ -104,11 +108,21 @@ module Runeforge
 
       # sessions: a host directory kept as the agent's Claude Code session store, so a later run can
       # resume this one (see Conversations); the container's HOME is otherwise thrown away.
+      # Variables the container CLI on this machine needs for itself; set in the container by value,
+      # never on the CLI's own process (a container's PATH there hides the `docker` binary).
+      HOST_VARIABLES = %w[PATH HOME USER SHELL TMPDIR LANG LC_ALL DOCKER_HOST DOCKER_CONFIG DOCKER_CONTEXT].freeze
+
       def run(workdir:, script:, env: {}, on_output: nil, sessions: nil)
         @id = "runeforge-#{SecureRandom.hex(6)}"
-        env = @env.merge(env)
+        values = @env.merge(env.slice(*HOST_VARIABLES))
+        secrets = env.except(*HOST_VARIABLES) # by name, after the values, so a caller's setting wins
         start_services if @services.any?
-        Runner.run(argv(workdir, script, env.keys, sessions), env:, timeout: @timeout, on_timeout: -> { kill }, on_output:)
+        result = Runner.run(argv(workdir, script, secrets.keys, sessions, values:), env: secrets, timeout: @timeout,
+                                                                                  on_timeout: -> { kill }, on_output:)
+        unavailable!(result)
+        result
+      rescue Errno::ENOENT
+        raise Unavailable, "`#{@runtime}` isn't installed or isn't on PATH"
       ensure
         stop_services
         @id = nil
@@ -124,7 +138,9 @@ module Runeforge
 
       def service_container(service) = "#{@id}-#{service.name}"
 
-      def argv(workdir, script, env_names, sessions = nil)
+      # env_names: passed by name from this process (secrets stay out of the process list);
+      # values: set by value (the project's own settings, which aren't secret).
+      def argv(workdir, script, env_names, sessions = nil, values: {})
         network = @services.any? ? ["--network", network_name, *(@name ? ["--network-alias", @name] : [])] : ["--network", @network]
         args = [
           @runtime, "run", "--rm", "--name", @id,
@@ -137,6 +153,7 @@ module Runeforge
           "-v", "#{workdir}:/workspace", "-w", "/workspace"
         ]
         args.push("-v", "#{sessions}:/tmp/home/.claude/projects") if sessions
+        values.each { |name, value| args.push("-e", "#{name}=#{value}") }
         # Pass variables by name so their values never appear in the process list.
         env_names.each { |name| args.push("-e", name) }
         args.push(@image, "sh", "-c", script)
@@ -144,17 +161,28 @@ module Runeforge
 
       private
 
+      # Exit 125 is the container CLI failing before the command ran (docker and podman both).
+      DAEMON_ERROR = /Error response from daemon|Cannot connect to the (?:Docker|Podman) daemon|error during connect|input\/output error|no space left on device/i
+
+      def unavailable!(result)
+        return unless result.exit_code == 125 && result.stderr.match?(DAEMON_ERROR)
+
+        raise Unavailable, "#{@runtime} couldn't start the container: #{result.stderr.strip.lines.last(2).join(' ').strip[0, 400]}"
+      end
+
       # With network: none, the services' network has no way out either.
       def start_services
         quiet = { out: File::NULL, err: File::NULL }
         internal = @network == "none" ? ["--internal"] : []
-        raise Error, "could not create the network #{network_name}" unless system(@runtime, "network", "create", *internal, network_name, **quiet)
+        created = system(@runtime, "network", "create", *internal, network_name, **quiet)
+        raise Unavailable, "`#{@runtime}` isn't installed or isn't on PATH" if created.nil?
+        raise Unavailable, "#{@runtime} couldn't create the network #{network_name}; is it running?" unless created
 
         @services.each do |service|
           env = service.env.flat_map { |name, value| ["-e", "#{name}=#{value}"] }
           started = system(@runtime, "run", "-d", "--rm", "--name", service_container(service), "--network", network_name,
                            "--network-alias", service.name, "--cpus", @cpus.to_s, "--memory", @memory.to_s, *env, service.image, **quiet)
-          raise Error, "could not start the #{service.name} service (#{service.image})" unless started
+          raise Unavailable, "the #{service.name} service (#{service.image}) didn't start" unless started
         end
         @services.each { |service| wait_ready(service) }
       end
@@ -166,7 +194,7 @@ module Runeforge
 
         deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + @ready_seconds
         until system(@runtime, "exec", service_container(service), *check, out: File::NULL, err: File::NULL)
-          raise Error, "the #{service.name} service (#{service.image}) wasn't ready after #{@ready_seconds}s" if
+          raise Unavailable, "the #{service.name} service (#{service.image}) wasn't ready after #{@ready_seconds}s" if
             Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
 
           sleep 0.5

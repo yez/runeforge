@@ -201,8 +201,39 @@ workers before their first run in the project.
   installed. Without it, well-known features are installed as apt packages instead
   (`postgres-client`, `mysql-client`, `sqlite3`, `activestorage`, `github-cli`; Runeforge adds
   Node itself), and the others are skipped, with a warning.
+- **Users:** tools run with the devcontainer's `remoteUser` login environment (from
+  devcontainer.json or the image's `devcontainer.metadata` label), as the devcontainer CLI's
+  `userEnvProbe` does, so Ruby and Node from version managers such as mise and rbenv are on
+  `PATH`. The project's gems are installed in the image; if they don't install, the image
+  doesn't build.
 - An image set with `runeforge repo set NAME --image` takes precedence. If the image fails to
-  build, agents use the general image and the step says why.
+  build, the environment check fails with the end of the build log (in `~/.runeforge/logs/`)
+  and, for a full disk or Docker storage errors, what to do. Background workers keep the last
+  image that built, or the general image.
+
+## Checking the build environment
+
+`runeforge doctor -d DIR` checks a project the way its agents will use it, in the sandbox they
+run in, and says what to fix for anything that fails:
+
+```
+Checking the build environment for /Users/you/resume_refiner
+  ✓ docker         running (28.5.2)
+  ✓ disk           15 GB free
+  ✓ project image  runeforge/resume-refiner-50bba4-dev:ea745d87d253
+  ✓ container      ruby 3.4.7, node 20.19.2
+  ✓ versions       ruby 3.4.7 as pinned
+  ✓ services       selenium, redis, postgres start and answer
+  ✓ credentials    set for claude_code/claude-sonnet-5-5
+  ✓ checkout       build-resume is clean; work is merged into it
+Ready: agents and tests can run here.
+```
+
+`runeforge build -d DIR` and `resume -d DIR` run the same check before they read the inbox or
+start a step, so a broken environment stops them before any tokens are spent and without
+touching a plan. If the container runtime stops working during a step (Docker quits, its disk
+fills up), the step stops at once, isn't counted as an attempt, and continues where it was on
+the next run; background workers wait a minute and try again.
 
 ## Commands
 
@@ -226,6 +257,7 @@ workers before their first run in the project.
 | `runeforge config path` / `config show` | The config file in use / the settings in effect, defaults included |
 | `runeforge inbox [REPO] [--poll] [--all]` | The plans queued from each project's `runeforge/inbox/` |
 | `runeforge build -d DIR [--retry]` / `runeforge resume -d DIR [--retry]` | Builds DIR's inbox plans in the foreground; `--retry` retries the failed ones |
+| `runeforge doctor -d DIR` | Checks that DIR's agents and tests can run (see Checking the build environment) |
 | `runeforge demo` | Dry-run agents forever, plus the dashboard; no LLM, git or network |
 | `runeforge worker --role R --dry-run` | A worker whose agents only go through the motions |
 
@@ -338,9 +370,17 @@ runeforge/
   `retries:` for `max_attempts:`) are ignored with a warning.
 - **Building in the foreground:** `runeforge build -d DIR` (or `runeforge -d DIR`) with no file
   or prompt builds DIR's inbox at the terminal, as `runeforge resume -d DIR` does once no build
-  there is unfinished. It offers to retry a failed plan, in its old place, from the step that
-  failed: the steps before it stay merged. `--retry` retries every failed plan without asking.
-  Use it after fixing what the plan failed on, such as the project's build environment.
+  there is unfinished. Both run the environment check first (see [Checking the build
+  environment](#checking-the-build-environment)) and start nothing until it passes.
+- **When the environment is the problem:** a step that fails because of where it ran (the
+  planner finds the toolchain missing, the pinned versions don't match, Docker stops working)
+  doesn't fail its plan or use an attempt. The plan waits in the queue, `runeforge inbox` says
+  what for, and the next `runeforge build -d DIR` continues it once the check passes. If the
+  same step still can't run after a passing check, the plan fails with the agent's explanation
+  of what it needs.
+- **Retrying a failed plan:** `runeforge build -d DIR` offers to retry a plan that failed for any
+  other reason, in its old place, from the step that failed (the steps before it stay merged);
+  `--retry` retries them without asking.
 - **Locked tests carry over:** each plan inherits the acceptance tests of every finished plan, so
   a plan that contradicts an earlier one fails its review instead of quietly breaking it.
 - **Not merged:** if a plan's work can't be merged (branch protection, conflicts), the

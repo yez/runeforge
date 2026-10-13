@@ -50,6 +50,33 @@ RSpec.describe Runeforge::Worker do
       expect(messages.where(type: "plan.request").first[:state]).to eq("pending")
     end
 
+    it "gives the message back without using a delivery when the sandbox can't run, and says why" do
+      env = build_env
+      start_task(env)
+      broken = instance_double(Runeforge::Sandbox::Container, id: nil)
+      allow(broken).to receive(:run).and_raise(Runeforge::Sandbox::Unavailable, "`docker` isn't installed or isn't on PATH")
+      env.sandbox_factory = ->(**) { broken }
+      worker = described_class.new(env, roles: ["planner"])
+
+      3.times { worker.work_once }
+      msg = messages.where(type: "plan.request").first
+      expect(msg).to include(state: "pending", delivery_count: 0)
+      expect(msg[:last_error]).to eq("the sandbox is unavailable: `docker` isn't installed or isn't on PATH")
+      expect(worker.unavailable).to eq("`docker` isn't installed or isn't on PATH")
+    end
+
+    it "waits a while before trying again in the background when the sandbox can't run" do
+      env = build_env
+      start_task(env)
+      broken = instance_double(Runeforge::Sandbox::Container, id: nil)
+      allow(broken).to receive(:run).and_raise(Runeforge::Sandbox::Unavailable, "docker isn't running")
+      env.sandbox_factory = ->(**) { broken }
+      worker = described_class.new(env, roles: ["planner"])
+
+      expect { expect(worker.work_once).to be(true) }.to output(/docker isn't running; trying again in 60s/).to_stderr
+      expect(worker.work_once).to be(false) # paused
+    end
+
     it "gives the message back when the role handler crashes" do
       env = build_env
       start_task(env)

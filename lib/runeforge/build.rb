@@ -92,6 +92,7 @@ module Runeforge
 
       name = repo ? repo[:name] : register(env, directory)
       inbox = InboxRun.new(env, repo: name, directory:, stdin:, stdout:)
+      inbox.check!
       return inbox if inbox.ready(retry_failed:).any?
 
       loose = inbox.uncommitted
@@ -118,8 +119,8 @@ module Runeforge
     end
 
     # An unregistered directory's inbox can be read once it's a git repository with a commit on a branch.
-    def self.inbox_ready?(env, directory)
-      InboxRun.enabled?(env) && Git.run("rev-parse", "--verify", "--quiet", "HEAD", dir: directory, allow_failure: true) &&
+    def self.inbox_ready?(env, directory, inbox: true)
+      (!inbox || InboxRun.enabled?(env)) && Git.run("rev-parse", "--verify", "--quiet", "HEAD", dir: directory, allow_failure: true) &&
         current_branch(directory)
     end
 
@@ -140,6 +141,7 @@ module Runeforge
     def self.resume_inbox(env, repo, directory, runs, retry_failed, stdin, stdout)
       if InboxRun.enabled?(env)
         inbox = InboxRun.new(env, repo:, directory:, stdin:, stdout:)
+        inbox.check!
         return inbox if inbox.ready(retry_failed:).any?
 
         loose = inbox.uncommitted
@@ -170,9 +172,10 @@ module Runeforge
       platform_check!(project)
       @env.check_agent_credentials!(project:)
       directory, created = resolve_directory
+      @registered_dir = directory
       Setup.new(config_path: Config.locate, out: @out).prepare(@env)
       repo = @registered = register(directory)
-      Setup.new(config_path: Config.locate, out: @out).prepare_project(@env, repo)
+      Doctor.new(@env, repo, directory:, out: @out).run!
       start = plan_start(repo)
       return nothing_left(directory) if start.skip == @input.steps.size
 
@@ -418,7 +421,12 @@ module Runeforge
         end
         task = @env.tasks.find!(task_id)
         return task if TERMINAL_STATUSES.include?(task[:status]) || task[:status] == "blocked"
-        next if answer_operator || @worker.work_once
+        worked = answer_operator || @worker.work_once
+        if @worker.unavailable
+          raise Error, "the sandbox stopped working: #{@worker.unavailable}. Nothing was counted as an attempt; " \
+                       "check with `runeforge doctor -d #{@registered_dir}`, then continue with `runeforge resume -d #{@registered_dir}`"
+        end
+        next if worked
 
         sleep @env.config["poll_seconds"]
       end

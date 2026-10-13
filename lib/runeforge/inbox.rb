@@ -52,6 +52,13 @@ module Runeforge
     # The files a project starts with.
     def self.scaffold = { "#{DIR}/README.md" => README, "#{INBOX}/.gitkeep" => "", "#{DONE}/.gitkeep" => "" }
 
+    # A step that failed because of where it ran, not what it did: the toolchain the planner needs
+    # isn't there, the language versions don't match, the sandbox couldn't start. Its plan waits
+    # for the environment instead of failing (see #progress).
+    ENVIRONMENT_FAILURE = /incompatible build environment:|the sandbox is unavailable|Errno::ENOENT: No such file or directory - (?:docker|podman)\b/
+
+    def self.environment_failure?(error) = error.to_s.match?(ENVIRONMENT_FAILURE)
+
     def self.plan_path?(path)
       path.start_with?("#{INBOX}/") && path.end_with?(".md") && !File.basename(path).casecmp?("README.md") &&
         !File.basename(path).start_with?(".")
@@ -227,10 +234,48 @@ module Runeforge
 
       case task[:status]
       when "done" then step_done(repo, plan, task, base)
-      when "failed", "cancelled", "blocked"
+      when "failed", "blocked"
+        return wait_for_environment(repo, plan, task) if self.class.environment_failure?(task[:error])
+
+        update(plan, status: "failed", reason: "#{task[:id]} #{task[:status]}: #{task[:error]}")
+      when "cancelled"
         update(plan, status: "failed", reason: "#{task[:id]} #{task[:status]}: #{task[:error]}")
       end
     end
+
+    # The plan goes back to the queue, at the same step, and the repository's queue waits until
+    # `runeforge doctor` (or `build -d`, which runs it) finds the environment fixed. If the step
+    # fails like this again after that, the environment check can't see what's missing, so the
+    # plan fails with the agent's explanation of what it needs.
+    def wait_for_environment(repo, plan, task)
+      tries = step_tasks(plan).count { |id| (t = env.tasks.find(id)) && self.class.environment_failure?(t[:error]) }
+      if tries > 1
+        return update(plan, status: "failed",
+                            reason: "#{task[:id]} still can't run here after the environment check passed: #{task[:error]}. " \
+                                    "Add what it needs to the project's devcontainer, commit it, and run " \
+                                    "`runeforge build -d #{repo_dir(repo)} --retry`")
+      end
+
+      env.repos.update(repo[:name], platform_status: "incompatible", platform_note: task[:error].to_s[0, 1500],
+                                    platform_checked_at: Runeforge.now)
+      update(plan, status: "queued", task_id: task_before_step(plan),
+                   reason: "waiting for the build environment: #{task[:error].to_s.lines.first.to_s.strip[0, 300]}")
+    end
+
+    # The ids of the tasks that ran the plan's current step, oldest first.
+    def step_tasks(plan)
+      pattern = plan[:steps].to_i > 1 ? /-s#{plan[:step].to_i + 1}(?:-r\d+)?\z/ : /\A/
+      JSON.parse(plan[:task_ids] || "[]").grep(pattern)
+    end
+
+    # The last task of the step before the current one, whose locked tests the step starts from.
+    def task_before_step(plan)
+      return nil unless plan[:step].to_i.positive?
+
+      JSON.parse(plan[:task_ids] || "[]").reverse.find { |id| id.match?(/-s#{plan[:step]}(?:-r\d+)?\z/) }
+    end
+
+    def repo_dir(repo) = repo[:url].to_s.start_with?("/") ? repo[:url] : "DIR"
 
     def step_done(repo, plan, task, base)
       unless manual?(repo[:name]) || task[:merged_sha]
@@ -266,6 +311,10 @@ module Runeforge
 
     def start_next(repo, base)
       name = repo[:name]
+      if repo[:platform_status] == "incompatible"
+        return block_waiting(name, "waiting for the build environment (#{repo[:platform_note].to_s.lines.first.to_s.strip[0, 200]}); " \
+                                   "`runeforge doctor -d #{repo_dir(repo)}` shows what to fix")
+      end
       finished = plans.where(repo: name, status: "done").select_map(:name)
       plans.where(repo: name, status: WAITING).order(:arrival, :path).all.each do |plan|
         waiting = JSON.parse(plan[:after] || "[]") - finished
@@ -371,9 +420,8 @@ module Runeforge
       raise Error, "#{plan[:name]} is #{plan[:status]}, not failed" unless plan[:status] == "failed"
 
       # The tests carried in are the ones locked before the failed step (by the step before it).
-      before = JSON.parse(plan[:task_ids] || "[]").reverse.find { |id| id.match?(/-s#{plan[:step]}(?:-r\d+)?\z/) }
       env.repos.update(plan[:repo], platform_status: nil, platform_note: nil, platform_checked_at: nil)
-      update(plan, status: "queued", reason: "retried", task_id: plan[:step].to_i.positive? ? before : nil)
+      update(plan, status: "queued", reason: "retried", task_id: task_before_step(plan))
     end
 
     # Failed plans whose file is still in the inbox unchanged, oldest first.

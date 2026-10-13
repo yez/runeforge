@@ -47,9 +47,17 @@ module Runeforge
       @sandbox&.kill
     end
 
+    # Why the sandbox couldn't run the last message (Sandbox::Unavailable), until one runs. A
+    # foreground run stops on it; a background worker waits UNAVAILABLE_PAUSE before trying again.
+    attr_reader :unavailable
+
+    UNAVAILABLE_PAUSE = 60
+
     # Handles at most one message. Returns true if it did any work.
     def work_once
       announce
+      return false if @unavailable_at && Process.clock_gettime(Process::CLOCK_MONOTONIC) - @unavailable_at < UNAVAILABLE_PAUSE
+
       msg = mailbox.claim(roles.map { |role| Runeforge.recipient(lane, role) }, task_ids: repo && env.tasks.ids_in(repo))
       return false unless msg
 
@@ -69,6 +77,13 @@ module Runeforge
       return mailbox.release(msg, error: "interrupted from the terminal", counted: false) if @interrupted
 
       mailbox.complete(msg, **outcome)
+      @unavailable = @unavailable_at = nil
+    rescue Sandbox::Unavailable => e
+      # Not the agent's doing: the message waits, without using a delivery, until the sandbox works.
+      mailbox.release(msg, error: "the sandbox is unavailable: #{e.message}", counted: false)
+      @unavailable = e.message
+      @unavailable_at = Process.clock_gettime(Process::CLOCK_MONOTONIC) if lane.nil? && repo.nil?
+      warn "runeforge: #{e.message}; trying again in #{UNAVAILABLE_PAUSE}s" if @unavailable_at
     rescue Mailbox::LeaseLost
       # Reclaimed or cancelled while we worked; someone else owns the message now.
       nil
@@ -93,7 +108,7 @@ module Runeforge
 
     # A background worker (`runeforge up`) builds the project's devcontainer image before its
     # first run there, and checks it again every PREPARE_EVERY seconds; foreground runs already
-    # did (Setup#prepare_project). Returns the repo row as it is now.
+    # did (Doctor). Returns the repo row as it is now.
     def prepare_project(project, msg)
       return project unless project && lane.nil? && repo.nil?
 
@@ -110,7 +125,7 @@ module Runeforge
         nil
       end
       status, detail = Devcontainer.ensure_image(env, project[:name])
-      warn "runeforge: #{project[:name]}: #{detail}" if status == :warning
+      warn "runeforge: #{project[:name]}: #{detail}" if %i[warning failed].include?(status)
       @prepared[project[:name]] = Runeforge.now
       env.repos.fetch(project[:name])
     rescue Error => e

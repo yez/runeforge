@@ -225,7 +225,8 @@ RSpec.describe "Ticket to pull request" do
       env = env_with(code: Helpers::CODE_GREETING, plan:)
       create(env)
       task = drive(env, "T-1", until_status: "failed")
-      expect(task[:error]).to include("planning failed: the planner can't build this here: This is an iOS app: it needs Xcode on a Mac.")
+      expect(task[:error]).to include("planning failed: incompatible build environment: the planner can't build this here: " \
+                                          "This is an iOS app: it needs Xcode on a Mac.")
     end
 
     it "sends a rejected plan back to the planner once with the reason, and continues when it's fixed" do
