@@ -119,6 +119,32 @@ RSpec.describe Runeforge::Inbox do
       expect(plan(env, "two")).to include(step: 2, steps: 2)
     end
 
+    it "retries a failed plan from the step that failed, keeping the steps before it" do
+      stuck = <<~SH
+        word=$(sed -n '/^## Spec/,$p' .runeforge/prompt.md | grep -o -m1 -E '#{words}')
+        [ "$word" = farewell ] && [ ! -f #{tmpdir}/allow ] && exit 0
+        mkdir -p lib
+        echo "$word" > "lib/${word}.txt"
+      SH
+      env = inbox_env(code: stuck)
+      commit_plans({ "two.md" => "---\nmax_attempts: 1\nsteps: each\n---\n# Two things\n\n- Add a greeting\n- Add a farewell\n" })
+      run_until(env) { plan(env, "two")&.dig(:status) == "failed" }
+      expect(plan(env, "two")).to include(step: 1)
+      expect(inbox(env).failed("demo").map { |p| p[:name] }).to eq(["two"])
+
+      FileUtils.touch(File.join(tmpdir, "allow"))
+      inbox(env).retry(plan(env, "two"))
+      expect(inbox(env).failed("demo")).to be_empty
+      run_until(env) { plan(env, "two")&.dig(:status) == "done" }
+
+      ids = env.tasks.list.map { |t| t[:id] }
+      expect(ids.count { |id| id.end_with?("-s1") }).to eq(1) # the greeting step wasn't built again
+      retried = env.tasks.find(ids.find { |id| id.end_with?("-s2-r2") })
+      expect(retried[:status]).to eq("done")
+      expect(JSON.parse(retried[:locked_paths]).keys).to contain_exactly("test/greeting_test.sh", "test/farewell_test.sh")
+      expect(origin_file("lib/farewell.txt")).to eq("farewell\n")
+    end
+
     it "keeps an edited queued plan's place and restarts an edited running plan" do
       env = inbox_env
       commit_plans({ "one.md" => "# Add a greeting\n" }, message: "one")

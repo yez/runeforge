@@ -35,6 +35,17 @@ RSpec.describe Runeforge::PlanFile do
     expect { described_class.parse("---\nmax_attempts: -1\n---\n# x\n") }.to raise_error(Runeforge::Error, /positive whole number/)
   end
 
+  it "warns about front matter keys it doesn't know, suggesting the one meant" do
+    plan = described_class.parse("---\nretries: 3\ntitel: CSV\ncolour: red\n---\n# Export\n")
+    expect(plan.warnings).to eq([
+                                  "unknown front matter key `retries` (ignored); did you mean `max_attempts`?",
+                                  "unknown front matter key `titel` (ignored); did you mean `title`?",
+                                  "unknown front matter key `colour` (ignored); known keys: title, after, replaces, max_attempts, steps"
+                                ])
+    expect(plan.meta).not_to include("max_attempts")
+    expect(described_class.parse("---\ntitle: CSV\n---\n# Export\n").warnings).to eq([])
+  end
+
   it "keeps a prompt as one step even when it looks like a list" do
     plan = described_class.parse("- do this\n- and that\n", list: false, source: "prompt")
     expect(plan.steps.size).to eq(1)

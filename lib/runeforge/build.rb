@@ -42,10 +42,10 @@ module Runeforge
 
     # `runeforge resume -d DIR`: continues the newest build in DIR that didn't finish (or the run
     # named by `run`), from the plan it stored. Returns nil when there's nothing to resume.
-    def self.resume(env, dir:, run: nil, from: nil, stdin: $stdin, stdout: $stdout)
+    def self.resume(env, dir:, run: nil, from: nil, retry_failed: false, stdin: $stdin, stdout: $stdout)
       directory, repo = project(env, dir)
       # A project no build has registered yet can still have plans in its inbox.
-      return resume_inbox(env, register(env, directory), directory, [], stdout) if repo.nil? && run.nil? && inbox_ready?(env, directory)
+      return resume_inbox(env, register(env, directory), directory, [], retry_failed, stdin, stdout) if repo.nil? && run.nil? && inbox_ready?(env, directory)
       raise Error, "no runeforge builds in #{directory}; start one with `runeforge build FILE --dir #{dir}`" unless repo
 
       runs = BuildProgress.new(env, repo[:name]).runs
@@ -57,7 +57,7 @@ module Runeforge
           runs.reverse.find { |r| !r[:finished] }
         end
       # With no build left unfinished, the plans waiting in the project's inbox are next.
-      return resume_inbox(env, repo[:name], directory, runs, stdout) if chosen.nil?
+      return resume_inbox(env, repo[:name], directory, runs, retry_failed, stdin, stdout) if chosen.nil?
       raise Error, "can't resume #{chosen[:id]}: its plan isn't stored on its tasks" unless chosen[:plan]
 
       if chosen[:live]
@@ -84,15 +84,15 @@ module Runeforge
 
     # `runeforge build -d DIR` with no file or prompt: the InboxRun for the unfinished plans in
     # DIR's runeforge/inbox/, or nil (saying why) when there are none.
-    def self.inbox(env, dir:, stdout: $stdout)
+    def self.inbox(env, dir:, retry_failed: false, stdin: $stdin, stdout: $stdout)
       raise Error, "the inbox is turned off (inbox.enabled in the config); give a file or a prompt to build" unless InboxRun.enabled?(env)
 
       directory, repo = project(env, dir)
       raise Error, "#{directory} is not a git repository with commits; its inbox only reads committed plans" unless repo || inbox_ready?(env, directory)
 
       name = repo ? repo[:name] : register(env, directory)
-      inbox = InboxRun.new(env, repo: name, directory:, stdout:)
-      return inbox if inbox.pending.any?
+      inbox = InboxRun.new(env, repo: name, directory:, stdin:, stdout:)
+      return inbox if inbox.ready(retry_failed:).any?
 
       loose = inbox.uncommitted
       base = env.repos.fetch(name)[:base_branch]
@@ -137,10 +137,10 @@ module Runeforge
 
     # The InboxRun for the repository's unfinished inbox plans, or nil (saying why) when there
     # are none.
-    def self.resume_inbox(env, repo, directory, runs, stdout)
+    def self.resume_inbox(env, repo, directory, runs, retry_failed, stdin, stdout)
       if InboxRun.enabled?(env)
-        inbox = InboxRun.new(env, repo:, directory:, stdout:)
-        return inbox if inbox.pending.any?
+        inbox = InboxRun.new(env, repo:, directory:, stdin:, stdout:)
+        return inbox if inbox.ready(retry_failed:).any?
 
         loose = inbox.uncommitted
         if loose.any?
@@ -172,6 +172,7 @@ module Runeforge
       directory, created = resolve_directory
       Setup.new(config_path: Config.locate, out: @out).prepare(@env)
       repo = @registered = register(directory)
+      Setup.new(config_path: Config.locate, out: @out).prepare_project(@env, repo)
       start = plan_start(repo)
       return nothing_left(directory) if start.skip == @input.steps.size
 
@@ -317,7 +318,7 @@ module Runeforge
 
       start = progress.start(@input, base:, from: @from, rerun: @rerun)
       show_progress(start) if @dir
-      start.notes.each { |note| @out.puts "  ! #{note}" }
+      (@input.warnings + start.notes).each { |note| @out.puts "  ! #{note}" }
       skip, total = start.skip, @input.steps.size
       if skip.positive? && skip < total && @from.nil? && interactive?
         answer = ask("Skip #{plural(skip, 'finished step')} and start at step #{skip + 1}? [Y/n]: ")
@@ -433,15 +434,7 @@ module Runeforge
       @worker.interrupt
     end
 
-    def answer_operator
-      msg = @operator_box.claim(Runeforge.recipient(@lane, "operator"))
-      return false unless msg
-
-      @operator_box.complete(msg, **@operator.call(msg))
-      true
-    rescue Mailbox::LeaseLost
-      true
-    end
+    def answer_operator = @operator.answer(@operator_box, Runeforge.recipient(@lane, "operator"))
 
     def describe(msg) = self.class.describe(msg, merging: merging?)
 

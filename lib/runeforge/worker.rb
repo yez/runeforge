@@ -60,7 +60,7 @@ module Runeforge
     private
 
     def process(msg)
-      project = project_for(msg)
+      project = prepare_project(project_for(msg), msg)
       sandbox = @sandbox = env.new_sandbox(image: project&.dig(:image), project:)
       beat(msg)
       heartbeat = start_heartbeat(msg, sandbox)
@@ -87,6 +87,37 @@ module Runeforge
       task && env.repos.fetch(task[:repo])
     rescue Error
       nil
+    end
+
+    PREPARE_EVERY = 300
+
+    # A background worker (`runeforge up`) builds the project's devcontainer image before its
+    # first run there, and checks it again every PREPARE_EVERY seconds; foreground runs already
+    # did (Setup#prepare_project). Returns the repo row as it is now.
+    def prepare_project(project, msg)
+      return project unless project && lane.nil? && repo.nil?
+
+      @prepared ||= {}
+      return project if @prepared[project[:name]] && Runeforge.now - @prepared[project[:name]] < PREPARE_EVERY
+
+      # Building an image can outlast the lease; keep it while it builds.
+      keepalive = Thread.new do
+        loop do
+          sleep(env.config["heartbeat_seconds"])
+          mailbox.heartbeat(msg)
+        end
+      rescue StandardError
+        nil
+      end
+      status, detail = Devcontainer.ensure_image(env, project[:name])
+      warn "runeforge: #{project[:name]}: #{detail}" if status == :warning
+      @prepared[project[:name]] = Runeforge.now
+      env.repos.fetch(project[:name])
+    rescue Error => e
+      warn "runeforge: #{project[:name]}: #{e.message}"
+      project
+    ensure
+      keepalive&.kill
     end
 
     def start_heartbeat(msg, sandbox)

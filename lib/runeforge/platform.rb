@@ -60,11 +60,56 @@ module Runeforge
       [paths, read]
     end
 
+    # Language versions a project pins, by tool: { "ruby" => "3.4.7", "node" => "20" }.
+    def pinned_runtimes(dir)
+      read = ->(file) { File.file?(File.join(dir, file)) ? File.read(File.join(dir, file), 10_000) : nil }
+      pins = {}
+      read.(".tool-versions")&.each_line do |line|
+        tool, version = line.split
+        pins[tool == "nodejs" ? "node" : tool] = version if %w[ruby nodejs node].include?(tool) && version
+      end
+      pins["ruby"] = read.(".ruby-version").strip.delete_prefix("ruby-") if read.(".ruby-version")
+      node = (read.(".nvmrc") || read.(".node-version"))&.strip&.delete_prefix("v")
+      pins["node"] = node if node
+      pins.select { |_tool, version| version.match?(/\A\d+(?:\.\d+)*\z/) }
+    end
+
+    RUNTIME_PROBE = %(ruby -e 'print RUBY_VERSION' 2>/dev/null; echo; node -p 'process.versions.node' 2>/dev/null; echo)
+
+    # Why the project's pinned language versions (see .pinned_runtimes) aren't what its sandbox
+    # image has, or nil. Checked before any tokens are spent; an image's versions are asked once.
+    def runtime_mismatch(env, project, dir)
+      return nil unless %w[docker podman].include?(env.sandbox_mode(project))
+
+      pins = pinned_runtimes(dir)
+      return nil if pins.empty?
+
+      image = project[:image] || env.config.dig("sandbox", "image")
+      @runtimes ||= {}
+      found = @runtimes[image] ||= Dir.mktmpdir("runeforge-runtimes") do |tmp|
+        ruby, node = env.new_sandbox(image:, project:, services: false).run(workdir: tmp, script: RUNTIME_PROBE).stdout.lines(chomp: true)
+        { "ruby" => ruby.to_s.strip, "node" => node.to_s.strip }
+      end
+      wrong = pins.filter_map do |tool, version|
+        have = found[tool].to_s
+        next if have.split(".").first(version.split(".").size) == version.split(".")
+
+        "#{tool} #{version} (it has #{have.empty? ? "no #{tool}" : "#{tool} #{have}"})"
+      end
+      return nil if wrong.empty?
+
+      "the project pins #{wrong.join(' and ')}, which the sandbox image #{image} doesn't match"
+    end
+
     # Where a project's agents and tests run, and which toolchains are there.
     def environment(env, project = nil)
       mode = env.sandbox_mode(project)
-      return Environment.new(mode:, description: "a Linux container (#{mode} sandbox, image #{env.config.dig('sandbox', 'image')})",
-                             apple: false, android: false, apple_fix: nil) unless mode == "none"
+      unless mode == "none"
+        image = project&.dig(:image) || env.config.dig("sandbox", "image")
+        devcontainer = project&.dig(:devcontainer) && Devcontainer.describe(JSON.parse(project[:devcontainer]))
+        return Environment.new(mode:, description: ["a Linux container (#{mode} sandbox, image #{image})", devcontainer].compact.join(". "),
+                               apple: false, android: false, apple_fix: nil)
+      end
 
       mac = mac?
       xcode = mac ? self.xcode : nil

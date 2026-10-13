@@ -20,6 +20,10 @@ module Runeforge
           return result("plan.failed", { "reason" => "incompatible build environment: #{verdict.reason}. To fix: #{verdict.fix}",
                                          "platform" => verdict.platform })
         end
+        if (mismatch = Platform.runtime_mismatch(env, repo, workspace.path))
+          env.repos.update(task[:repo], platform_status: "incompatible", platform_note: mismatch, platform_checked_at: Runeforge.now)
+          return result("plan.failed", { "reason" => "incompatible build environment: #{mismatch}. To fix: #{runtime_fix}" })
+        end
 
         pitfalls = env.memory.pitfalls(repo: task[:repo], query: [input["title"], input["description"]].compact.join("\n"),
                                        exclude_task: task[:id])
@@ -115,7 +119,22 @@ module Runeforge
       def blocked_hint
         return "" unless env.sandboxed?(repo)
 
-        " (to build on this machine instead, set `sandbox: none` for this project under `projects:` in runeforge.yml)"
+        " (#{runtime_fix})"
+      end
+
+      # How to give a sandboxed project the toolchain it needs.
+      def runtime_fix
+        dir = repo[:url].to_s.start_with?("/") ? repo[:url] : "DIR"
+        retry_with = "then run `runeforge resume -d #{dir} --retry`"
+        if repo[:devcontainer]
+          "the sandbox is the project's devcontainer image #{repo[:image]}: add what's missing to " \
+            "#{JSON.parse(repo[:devcontainer])['path']} and commit it, #{retry_with}; or set `sandbox: none` for this " \
+            "project under `projects:` in #{Config.locate} to build on this machine"
+        else
+          "commit a .devcontainer/devcontainer.json with the project's image and services (Runeforge builds it into the " \
+            "sandbox image), #{retry_with}; or set `sandbox: none` for this project under `projects:` in #{Config.locate} " \
+            "to build on this machine"
+        end
       end
 
       # A test file that mentions .runeforge/ (read by the planner's own workspace copy, which is

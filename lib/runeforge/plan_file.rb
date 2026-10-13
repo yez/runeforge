@@ -56,6 +56,11 @@ module Runeforge
       raise Error, "the plan's front matter is not valid YAML: #{e.message}"
     end
 
+    KEYS = %w[title after replaces max_attempts steps].freeze
+    # Names people reach for that no spell checker would map to the real key.
+    SYNONYMS = { "retries" => "max_attempts", "retry" => "max_attempts", "attempts" => "max_attempts",
+                 "depends_on" => "after", "depends" => "after", "needs" => "after", "supersedes" => "replaces" }.freeze
+
     def self.normalize(data)
       names = ->(value) { Array(value).map(&:to_s).map(&:strip).reject(&:empty?) }
       meta = {
@@ -74,7 +79,15 @@ module Runeforge
         raise Error, "steps in the front matter must be auto, each, or a positive whole number"
       end
 
-      meta.reject { |_key, value| value.nil? || value == "" }
+      meta.reject { |_key, value| value.nil? || value == "" }.merge("warnings" => unknown_keys(data.keys)).reject { |_k, v| v == [] }
+    end
+
+    # A misspelled key would otherwise be dropped without a word (`retries: 3` sets nothing).
+    def self.unknown_keys(keys)
+      (keys.map(&:to_s) - KEYS).map do |key|
+        suggestion = SYNONYMS[key.downcase] || DidYouMean::SpellChecker.new(dictionary: KEYS).correct(key).first
+        "unknown front matter key `#{key}` (ignored)#{suggestion ? "; did you mean `#{suggestion}`?" : "; known keys: #{KEYS.join(', ')}"}"
+      end
     end
 
     HEADING = /\A(\#{1,6})\s+(.+?)\s*#*\s*\z/
@@ -185,5 +198,7 @@ module Runeforge
     end
 
     def multi_step? = steps.size > 1
+
+    def warnings = meta.fetch("warnings", [])
   end
 end

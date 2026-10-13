@@ -78,6 +78,15 @@ module Runeforge
       self
     end
 
+    # Before building in a registered project: the image from its devcontainer, if it has one
+    # (see Devcontainer). A build that fails is a warning; agents use the general image meanwhile.
+    def prepare_project(env, repo_name)
+      @env = env
+      @quiet = true
+      step("project image") { Devcontainer.ensure_image(env, repo_name, shell: @shell, out: @out) }
+      self
+    end
+
     private
 
     def step(name)

@@ -259,10 +259,12 @@ module Runeforge
 
       With --dir and no INPUT, it builds the unfinished plans committed to the project's
       runeforge/inbox/ in the foreground, as `runeforge up` would, until none is running or queued.
+      It offers to retry failed plans (from the step that failed); --retry retries them all.
     DESC
     option :dir, aliases: "-d", desc: "Existing project directory to work in"
     option :from, type: :numeric, desc: "Start at this step (the steps before it must be done, unless --rerun)"
     option :rerun, type: :boolean, desc: "Build every step again, even the ones an earlier run finished"
+    option :retry, type: :boolean, desc: "With --dir and no INPUT: retry the inbox's failed plans without asking"
     def build(input = nil)
       return build_inbox if input.nil? && options[:dir]
       return help if input.nil?
@@ -273,7 +275,7 @@ module Runeforge
     no_commands do
       def build_inbox
         guard do
-          inbox = Build.inbox(env, dir: options[:dir])
+          inbox = Build.inbox(env, dir: options[:dir], retry_failed: options[:retry])
           exit(1) if inbox && !inbox.run
         end
       end
@@ -288,13 +290,15 @@ module Runeforge
 
       With no unfinished build, it builds the unfinished plans committed to the project's
       runeforge/inbox/ in the foreground, as `runeforge up` would, until none is running or queued.
+      It offers to retry failed plans (from the step that failed); --retry retries them all.
     DESC
     option :dir, aliases: "-d", required: true, desc: "The project directory"
     option :run, desc: "The run to continue (its id or lane), instead of the newest unfinished one"
     option :from, type: :numeric, desc: "Start at this step instead (the steps before it must be done)"
+    option :retry, type: :boolean, desc: "Retry the inbox's failed plans without asking"
     def resume
       guard do
-        build = Build.resume(env, dir: options[:dir], run: options[:run], from: options[:from])
+        build = Build.resume(env, dir: options[:dir], run: options[:run], from: options[:from], retry_failed: options[:retry])
         exit(1) if build && !build.run
       end
     end

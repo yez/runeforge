@@ -77,10 +77,17 @@ runeforge plan.md -d ~/code/my-app                              # iterate on an 
   command Runeforge defined. `runeforge build` ends by printing it, and `runeforge repo set NAME
   --run-command ...` changes it. The conventions for common web and mobile stacks are in
   [docs/run-conventions.md](docs/run-conventions.md).
-- **Missing tools:** agents run in the general-purpose image `runeforge/general:latest`
-  (Python, Node, Ruby, Go, build tools, git, Claude Code). When a step needs something else,
-  Runeforge asks which apt packages to add and builds a per-project image on top of it. With
-  `sandbox.mode: none` it asks you to install the tool yourself instead.
+- **The project's own environment:** a project with a `.devcontainer/devcontainer.json` is
+  built in it (see [Devcontainers](#devcontainers)): its image, with its gems installed in
+  advance, and the services it depends on (Postgres, Redis, Selenium, ...) started beside every
+  run. Before planning, Runeforge checks the Ruby and Node versions the project pins
+  (`.ruby-version`, `.tool-versions`, `.nvmrc`) against the image and stops, without spending
+  tokens, if they don't match.
+- **Missing tools:** other projects run in the general-purpose image `runeforge/general:latest`
+  (Python, Node, Ruby 3.3, Go, build tools, git, Claude Code). When a step needs something else,
+  Runeforge asks which apt packages to add and builds a per-project image on top of it (inbox
+  plans built with `runeforge build -d DIR` ask too). With `sandbox.mode: none` it asks you to
+  install the tool yourself instead.
 - It runs in the foreground and prints each step as it happens. Ctrl-C stops it and discards
   the step in progress; finished steps stay merged (or on the branch, with `manual_merge`).
 
@@ -173,6 +180,30 @@ With no `RUNEFORGE_LLM_API_KEY` set, Runeforge passes that token into the contai
 variable is `agent.oauth_token_env`). An API key wins when both are set. `runeforge build`,
 `worker` and `up` stop before starting if a sandboxed agent has neither.
 
+## Devcontainers
+
+Runeforge reads `.devcontainer/devcontainer.json` (or `.devcontainer.json`) from the base branch:
+an `image`, a `build` Dockerfile, or a `dockerComposeFile` with a `service`. It builds that image
+once per version of the devcontainer files, the Dockerfile, the Gemfiles and `.ruby-version`, as
+`runeforge/<repo>-dev:<hash>`, and adds a layer with Claude Code, ruby_llm and the project's gems
+(`bundle install`). `runeforge build -d DIR` builds it before the first step, and background
+workers before their first run in the project.
+
+- **Services:** with a compose file, the services the main service `depends_on` that are plain
+  images (`postgres:17`, `redis:7`, a Selenium browser) start on a private network next to every
+  sandbox run, under their service names, and are removed after it. Their data starts empty
+  each time, so the planner's `setup_command` prepares the database (`bin/rails db:prepare`).
+  Services built from source aren't started.
+- **Variables:** `containerEnv`, `remoteEnv` and the main service's `environment` are set in
+  every run (`DB_HOST=postgres`, `REDIS_URL=...`). Values that use `${localEnv:...}` are left
+  out.
+- **Features:** applied when the [devcontainer CLI](https://github.com/devcontainers/cli) is
+  installed. Without it, well-known features are installed as apt packages instead
+  (`postgres-client`, `mysql-client`, `sqlite3`, `activestorage`, `github-cli`; Runeforge adds
+  Node itself), and the others are skipped, with a warning.
+- An image set with `runeforge repo set NAME --image` takes precedence. If the image fails to
+  build, agents use the general image and the step says why.
+
 ## Commands
 
 | Command | What it does |
@@ -194,6 +225,7 @@ variable is `agent.oauth_token_env`). An API key wins when both are set. `runefo
 | `runeforge config edit` | Opens `~/.runeforge/runeforge.yml` in `$VISUAL`/`$EDITOR` (creating it if needed), then checks it |
 | `runeforge config path` / `config show` | The config file in use / the settings in effect, defaults included |
 | `runeforge inbox [REPO] [--poll] [--all]` | The plans queued from each project's `runeforge/inbox/` |
+| `runeforge build -d DIR [--retry]` / `runeforge resume -d DIR [--retry]` | Builds DIR's inbox plans in the foreground; `--retry` retries the failed ones |
 | `runeforge demo` | Dry-run agents forever, plus the dashboard; no LLM, git or network |
 | `runeforge worker --role R --dry-run` | A worker whose agents only go through the motions |
 
@@ -207,7 +239,7 @@ never judges its own work and never runs next to your credentials.
 |---|---|---|---|---|
 | **Supervisor** | No | Reads each result and sends the next command according to the workflow; enforces attempt, token and time budgets; requeues work whose worker stopped heartbeating and blocks a task after repeated failures | Host | No |
 | **Planner** | Yes | Writes the spec (`.runeforge/spec.md`), acceptance tests that fail until the step is built, and any scaffolding needed to run them; reports the test command, setup command and required tools in `.runeforge/project.json`. Its test files become locked | Sandbox | Yes: tests and scaffolding |
-| **Operator** | No (a person) | Foreground runs only: when the planner lists tools the sandbox lacks, or tests fail with "command not found", asks which apt packages to add and builds a per-project image (or, without a sandbox, asks you to install them) | Your terminal | No |
+| **Operator** | No (a person) | Foreground runs only (`build`, and inbox plans built with `build -d` or `resume -d`): when the planner lists tools the sandbox lacks, or tests fail with "command not found", asks which apt packages to add and builds a per-project image (or, without a sandbox, asks you to install them) | Your terminal | No |
 | **Coder** | Yes | Changes the code until the locked tests and the rest of the suite pass, using feedback from failed attempts. A patch that touches a locked test file is rejected | Sandbox | Yes, except locked tests |
 | **Tester** | No | Runs the setup and test commands against the coder's commit in a fresh sandbox; the exit code is the verdict. Never writes files | Sandbox | No |
 | **Reviewer** | No | Confirms every locked test file is byte-for-byte what the planner committed (by git object id) and that the change stays within size limits | Host | No |
@@ -302,7 +334,13 @@ runeforge/
   how many tasks the steps become; `title`, `max_attempts`.
 - **Changes:** edit a queued plan and it keeps its place; edit a running one and it restarts;
   edit a failed one (for example, check off the items that already merged) to queue it again
-  at the back; delete one to drop or cancel it.
+  at the back; delete one to drop or cancel it. Front matter keys Runeforge doesn't know (say,
+  `retries:` for `max_attempts:`) are ignored with a warning.
+- **Building in the foreground:** `runeforge build -d DIR` (or `runeforge -d DIR`) with no file
+  or prompt builds DIR's inbox at the terminal, as `runeforge resume -d DIR` does once no build
+  there is unfinished. It offers to retry a failed plan, in its old place, from the step that
+  failed: the steps before it stay merged. `--retry` retries every failed plan without asking.
+  Use it after fixing what the plan failed on, such as the project's build environment.
 - **Locked tests carry over:** each plan inherits the acceptance tests of every finished plan, so
   a plan that contradicts an earlier one fails its review instead of quietly breaking it.
 - **Not merged:** if a plan's work can't be merged (branch protection, conflicts), the

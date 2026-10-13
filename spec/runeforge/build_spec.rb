@@ -396,11 +396,13 @@ RSpec.describe Runeforge::Build do
     context "resuming with plans in the project's inbox" do
       let(:target) { File.join(tmpdir, "greeter") }
 
-      def commit_plan(name, body)
-        FileUtils.mkdir_p(File.join(target, "runeforge/inbox"))
-        File.write(File.join(target, "runeforge/inbox", name), body)
-        git(target, "add", "-A")
-        git(target, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-qm", "plan #{name}")
+      def commit_plan(name, body) = commit_plan_in(target, name, body)
+
+      def commit_plan_in(dir, name, body)
+        FileUtils.mkdir_p(File.join(dir, "runeforge/inbox"))
+        File.write(File.join(dir, "runeforge/inbox", name), body)
+        git(dir, "add", "-A")
+        git(dir, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-qm", "plan #{name}")
       end
 
       it "builds the unfinished inbox plans once every build is done" do
@@ -446,12 +448,60 @@ RSpec.describe Runeforge::Build do
         env = build_env_for
         target = make_project("runeforge/inbox/greeting.md" => "# Add a greeting\n")
         env.db.drop_table(:runeforge_lessons)
+        env.db.alter_table(:runeforge_repos) { drop_column :devcontainer }
         env.db[Runeforge::DB::SCHEMA_TABLE].update(version: 8)
 
         inbox = described_class.inbox(env, dir: target, stdout: out)
         expect(inbox.run).to be(true)
         expect(env.db.table_exists?(:runeforge_lessons)).to be(true)
         expect(out.string).to include("Add a greeting (greeting): done")
+      end
+
+      it "checks the tools a plan needs when someone is at the terminal" do
+        env = build_env_for(tools: '["sh"]')
+        target = make_project("runeforge/inbox/greeting.md" => "# Add a greeting\n")
+
+        inbox = described_class.inbox(env, dir: target, stdout: out)
+        expect(inbox.run).to be(true) # stdin isn't a terminal here: no operator, no check
+        expect(out.string).not_to include("checking tools")
+
+        commit_plan_in(target, "farewell.md", "# Add a farewell\n")
+        inbox = Runeforge::InboxRun.new(env, repo: env.repos.list.first[:name], directory: File.realpath(target),
+                                             stdin: StringIO.new, stdout: out, operator: true)
+        expect(inbox.pending).not_to be_empty
+        expect(inbox.run).to be(true)
+        expect(out.string).to include("· checking tools: sh", "✓ tools available", "Add a farewell (farewell): done")
+      end
+
+      it "retries a plan that failed once the build environment is fixed, without an edit" do
+        blocked = "[ -f #{tmpdir}/allow ] || { echo 'No Ruby 3.4.7 here' > .runeforge/blocked.md; exit 0; }\n"
+        env = build_env("agent" => { "command" => "sh #{fake_agent(plan: blocked + plan_script, code: code_script)}" })
+              .tap { |e| e.github = Helpers::FakeGitHub.new(opens_prs: false) }
+        target = make_project("runeforge/inbox/greeting.md" => "# Add a greeting\n")
+
+        expect(described_class.inbox(env, dir: target, stdout: out).run).to be(false)
+        expect(out.string).to include("the planner can't build this here: No Ruby 3.4.7 here")
+        repo = env.repos.list.first
+        expect(env.repos.fetch(repo[:name])[:platform_status]).to eq("incompatible")
+
+        out.truncate(0)
+        out.rewind
+        expect(described_class.inbox(env, dir: target, stdout: out)).to be_nil
+        expect(out.string).to include("Add a greeting (greeting) failed: ", "Retry failed plans with --retry")
+
+        FileUtils.touch(File.join(tmpdir, "allow"))
+        inbox = described_class.inbox(env, dir: target, retry_failed: true, stdout: out)
+        expect(env.repos.fetch(repo[:name])[:platform_status]).not_to eq("incompatible")
+        expect(inbox.run).to be(true)
+        expect(out.string).to include("(task greeting-p1-r2)", "Add a greeting (greeting): done")
+      end
+
+      it "shows front matter keys it ignored" do
+        env = build_env_for
+        target = make_project("runeforge/inbox/greeting.md" => "---\nretries: 3\n---\n# Add a greeting\n")
+
+        expect(described_class.inbox(env, dir: target, stdout: out).run).to be(true)
+        expect(out.string).to include("! unknown front matter key `retries` (ignored); did you mean `max_attempts`?")
       end
 
       it "builds the inbox of a project no build has registered, with `resume -d`" do
@@ -528,7 +578,7 @@ RSpec.describe Runeforge::Build do
     it "builds the directory's inbox when given -d and no input" do
       allow(Runeforge::Environment).to receive(:load).and_return(instance_double(Runeforge::Environment))
       inbox = instance_double(Runeforge::InboxRun, run: true)
-      expect(Runeforge::Build).to receive(:inbox).with(anything, dir: "proj").twice.and_return(inbox)
+      expect(Runeforge::Build).to receive(:inbox).with(anything, dir: "proj", retry_failed: nil).twice.and_return(inbox)
       expect(Runeforge::Build).not_to receive(:new)
       Runeforge::CLI.start(%w[-d proj])
       Runeforge::CLI.start(%w[build -d proj])

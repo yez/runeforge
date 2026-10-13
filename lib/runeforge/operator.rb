@@ -25,6 +25,18 @@ module Runeforge
       @builder = builder || method(:docker_build)
     end
 
+    # Answers one waiting deps.check for `recipient` from `mailbox`. Returns true when it handled
+    # (or lost) one, false when none was waiting.
+    def answer(mailbox, recipient, task_ids: nil)
+      msg = mailbox.claim(recipient, task_ids:)
+      return false unless msg
+
+      mailbox.complete(msg, **call(msg))
+      true
+    rescue Mailbox::LeaseLost
+      true
+    end
+
     # Returns the outcome for Mailbox#complete.
     def call(msg)
       tools = Array(msg.payload["tools"]).map(&:to_s).grep(TOOL).uniq
@@ -52,7 +64,7 @@ module Runeforge
 
       script = tools.map { |tool| "command -v #{tool} >/dev/null 2>&1 || echo #{tool}" }.join("\n")
       Dir.mktmpdir("runeforge-deps") do |dir|
-        @env.new_sandbox(image: repo[:image], project: repo).run(workdir: dir, script:).stdout.split.grep(TOOL)
+        @env.new_sandbox(image: repo[:image], project: repo, services: false).run(workdir: dir, script:).stdout.split.grep(TOOL)
       end
     end
 

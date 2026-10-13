@@ -187,7 +187,7 @@ module Runeforge
     def front_matter(name, blob)
       parsed = PlanFile.parse(env.repos.blob(name, blob), source: "plan")
       { title: parsed.title, after: JSON.generate(parsed.meta.fetch("after", [])),
-        replaces: JSON.generate(parsed.meta.fetch("replaces", [])) }
+        replaces: JSON.generate(parsed.meta.fetch("replaces", [])), reason: parsed.warnings.any? ? parsed.warnings.join("; ") : nil }
     rescue Error => e
       { title: nil, after: "[]", replaces: "[]", status: "failed", reason: e.message }
     end
@@ -283,7 +283,8 @@ module Runeforge
 
     def start_plan(repo, plan, base)
       parsed = parsed(repo[:name], plan)
-      update(plan, status: "running", steps: parsed.steps.size, step: 0, reason: nil,
+      # step: 0 for a new plan; a retried plan starts again at the step that failed (see #retry).
+      update(plan, status: "running", steps: parsed.steps.size, step: plan[:step].to_i, reason: nil,
                    inherited: JSON.generate(carried_tests(repo, plan, base).keys))
       start_step(repo, plans.where(id: plan[:id]).first, base)
     rescue Error => e
@@ -297,7 +298,7 @@ module Runeforge
       step = parsed.steps.fetch(plan[:step])
       multi = parsed.multi_step?
       branch, start = branch_and_base(name, plan, multi, base)
-      id = "#{Build.slug(plan[:name]).then { |s| s.empty? ? 'plan' : s }}-p#{plan[:id]}#{multi ? "-s#{plan[:step] + 1}" : ''}"
+      id = step_task_id(plan, multi)
       budgets = env.config["budgets"]
       task = env.tasks.find(id) || env.tasks.create(
         id:, workflow: "inbox", repo: name, base_sha: start, branch:, title: multi ? step.title : parsed.title,
@@ -353,6 +354,38 @@ module Runeforge
       plans.where(repo: name, status: WAITING).exclude(id: plan[:id]).order(:arrival).limit(20)
            .select_map(%i[name title]).map { |plan_name, title| "#{title || plan_name} (#{plan_name})" }
     end
+
+    # The step's task id. A retried step (see #retry) gets a new one: "<id>-r2", "<id>-r3", ...
+    def step_task_id(plan, multi)
+      id = "#{Build.slug(plan[:name]).then { |s| s.empty? ? 'plan' : s }}-p#{plan[:id]}#{multi ? "-s#{plan[:step] + 1}" : ''}"
+      [id, *(2..99).map { |n| "#{id}-r#{n}" }].find do |candidate|
+        task = env.tasks.find(candidate)
+        task.nil? || !%w[failed cancelled blocked].include?(task[:status])
+      end || raise(Error, "#{plan[:name]} was retried too many times")
+    end
+
+    # Queues a failed plan again, in its old place, from the step that failed: the steps before it
+    # stay merged and their tests stay locked. The project's platform verdict is cleared, so a
+    # build environment fixed since then is checked afresh. Returns the plan.
+    def retry(plan)
+      raise Error, "#{plan[:name]} is #{plan[:status]}, not failed" unless plan[:status] == "failed"
+
+      # The tests carried in are the ones locked before the failed step (by the step before it).
+      before = JSON.parse(plan[:task_ids] || "[]").reverse.find { |id| id.match?(/-s#{plan[:step]}(?:-r\d+)?\z/) }
+      env.repos.update(plan[:repo], platform_status: nil, platform_note: nil, platform_checked_at: nil)
+      update(plan, status: "queued", reason: "retried", task_id: plan[:step].to_i.positive? ? before : nil)
+    end
+
+    # Failed plans whose file is still in the inbox unchanged, oldest first.
+    def failed(name)
+      blobs = env.repos.files(name, env.repos.refresh(name), INBOX)
+      latest = plans.where(repo: name.to_s).exclude(status: "superseded").all.group_by { |p| p[:path] }
+                    .transform_values { |rows| rows.max_by { |p| p[:id] } }
+      latest.values.select { |p| p[:status] == "failed" && blobs[p[:path]] == p[:blob] }.sort_by { |p| [p[:arrival], p[:path]] }
+    end
+
+    # What's wrong with a plan's front matter that didn't stop it (see PlanFile.unknown_keys).
+    def warnings(plan) = parsed(plan[:repo], plan).warnings
 
     def parsed(name, plan) = PlanFile.parse(env.repos.blob(name, plan[:blob]), source: "plan")
 

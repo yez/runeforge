@@ -21,10 +21,12 @@ module Runeforge
 
     # With a lane, handles only that foreground run's results; with a repo, only that
     # repository's background tasks and inbox (`runeforge resume` building its inbox).
-    def initialize(env, id: "supervisor@#{Socket.gethostname}:#{Process.pid}", lane: nil, repo: nil)
+    # operator: a person at this terminal answers dependency prompts (see InboxRun), as for a lane.
+    def initialize(env, id: "supervisor@#{Socket.gethostname}:#{Process.pid}", lane: nil, repo: nil, operator: false)
       @env = env
       @lane = lane
       @repo = repo
+      @operator = operator
       @mailbox = env.mailbox(id)
     end
 
@@ -80,7 +82,7 @@ module Runeforge
         handler = workflow.handler_for(msg.type)
         next unless handler
 
-        Context.new(env, mailbox, task, msg).instance_exec(task, msg, &handler)
+        Context.new(env, mailbox, task, msg, operator: @operator).instance_exec(task, msg, &handler)
       end
     rescue Mailbox::LeaseLost
       nil
@@ -92,11 +94,12 @@ module Runeforge
     class Context
       attr_reader :task, :msg
 
-      def initialize(env, mailbox, task, msg)
+      def initialize(env, mailbox, task, msg, operator: false)
         @env = env
         @mailbox = mailbox
         @task = task
         @msg = msg
+        @operator = operator
       end
 
       def send_to(role, type, sha: nil, **payload)
@@ -170,7 +173,7 @@ module Runeforge
       end
 
       # Foreground runs have a person at the terminal who can answer dependency prompts.
-      def interactive? = !task[:lane].nil?
+      def interactive? = !task[:lane].nil? || @operator
 
       # Commands a failed test run couldn't find (exit status 127), e.g. "cargo: command not found".
       def missing_commands(result)

@@ -94,11 +94,15 @@ module Runeforge
       end
     end
 
-    def new_sandbox(image: nil, project: nil)
+    # project: a repo row; with a devcontainer (see Devcontainer.ensure_image) its runs get the
+    # devcontainer's variables and, with services: true, its services alongside.
+    def new_sandbox(image: nil, project: nil, services: true)
       return @sandbox_factory.call(image:) if @sandbox_factory
       return DryRun::Sandbox.new if dry_run?
 
-      Sandbox.build(config["sandbox"].merge("mode" => sandbox_mode(project)), image:)
+      devcontainer = project && project[:devcontainer] && JSON.parse(project[:devcontainer])
+      devcontainer = devcontainer.merge("services" => []) if devcontainer && !services
+      Sandbox.build(config["sandbox"].merge("mode" => sandbox_mode(project)), image:, devcontainer:)
     end
 
     def committer(repo_name)
