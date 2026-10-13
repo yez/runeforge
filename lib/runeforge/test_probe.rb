@@ -30,8 +30,39 @@ module Runeforge
       [/^Build FAILED\.|: error CS\d{4}:/, "dotnet couldn't build the tests"]
     ].freeze
     ANSI = /\e\[[0-9;]*m/
+    SETUP_FAILED = "__RUNEFORGE_SETUP_FAILED__"
 
     module_function
+
+    # The script that runs a project's tests: the setup command (passed as $RUNEFORGE_SETUP, see
+    # .env), then the test command, in one shell so setup's exports reach the tests. A setup
+    # command that doesn't parse, or fails, is marked so it isn't mistaken for failing tests
+    # (see .setup_failure).
+    def script(test_command)
+      <<~SH
+        if [ -n "${RUNEFORGE_SETUP:-}" ]; then
+          if ! syntax=$(sh -n -c "$RUNEFORGE_SETUP" 2>&1); then
+            printf '%s\n\n%s syntax\n' "$syntax" "#{SETUP_FAILED}" >&2
+            exit 2
+          fi
+          eval "$RUNEFORGE_SETUP"
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            printf '\n%s %s\n' "#{SETUP_FAILED}" "$status" >&2
+            exit "$status"
+          fi
+        fi
+        #{test_command}
+      SH
+    end
+
+    def env(setup_command) = setup_command.to_s.strip.empty? ? {} : { "RUNEFORGE_SETUP" => setup_command.to_s.strip }
+
+    # "syntax" when the setup command isn't valid shell, "exit" when it failed, or nil.
+    def setup_failure(output) = output.to_s[/^#{SETUP_FAILED} (\S+)$/, 1]&.then { |kind| kind == "syntax" ? "syntax" : "exit" }
+
+    # The run's output without the setup marker.
+    def clean(output) = output.to_s.gsub(/\n*^#{SETUP_FAILED} \S+\n?/, "\n").rstrip
 
     # Why nothing ran, or nil. Exit 127 (command not found) is left to the dependency check.
     def nothing_ran(output, exit_code)

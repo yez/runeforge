@@ -88,7 +88,9 @@ module Runeforge
         fields[:run_docs_required] = options[:require_run_docs] unless options[:require_run_docs].nil?
         raise Error, "nothing to change; pass e.g. --run-command 'npm start'" if fields.empty?
 
-        env.repos.update(name, fields)
+        # A command set here is the person's: later plans no longer replace it.
+        planned = RepoStore.planned(env.repos.fetch(name)) - fields.keys.map(&:to_s)
+        env.repos.update(name, fields.merge(planned_commands: JSON.generate(planned)))
         repo = env.repos.fetch(name)
         say "#{name}: test #{repo[:test_command].to_s.empty? ? '-' : repo[:test_command]}, " \
             "run #{repo[:run_command].to_s.empty? ? '-' : repo[:run_command]}" \

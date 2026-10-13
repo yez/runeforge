@@ -65,6 +65,28 @@ RSpec.describe Runeforge::Supervisor do
       expect(messages.where(task_id: "T-1", state: "pending").count).to eq(0)
     end
 
+    it "sends a setup command that isn't valid shell back to the planner, without using coding attempts" do
+      add_repo(env)
+      env.repos.update("demo", setup_command: "echo \"oops")
+      base = env.repos.refresh("demo")
+      env.tasks.create(id: "T-1", workflow: "jira_to_pr", repo: "demo", base_sha: base, mailbox: env.mailbox("intake"),
+                       title: "Greet", input: { "title" => "Greet" }, max_attempts: 2, branch: "runeforge/t-1")
+      supervisor.tick
+      respond("planner", "plan.done", { "spec" => "Say hi", "locked_paths" => {} }, sha: base)
+      supervisor.tick
+      respond("coder", "code.done", sha: base)
+      supervisor.tick
+      respond("tester", "test.result", { "passed" => false, "exit_code" => 2, "setup_failed" => "syntax",
+                                         "reason" => "the setup command isn't valid shell, so no test ran",
+                                         "output_tail" => "sh: 1: Syntax error: Unterminated quoted string" }, sha: base)
+      supervisor.tick
+
+      expect(task).to include(status: "planning", attempts: 0)
+      request = Runeforge::Message.from_row(messages.where(type: "plan.request").order(Sequel.desc(:id)).first)
+      expect(request.payload["feedback"]).to include("The setup command your plan recorded isn't valid shell", "`echo \"oops`",
+                                                     "Unterminated quoted string", "script/runeforge_setup.sh")
+    end
+
     it "ends a failure reason with the end of the last output, where the failure is" do
       create_task(max_attempts: 1)
       supervisor.tick

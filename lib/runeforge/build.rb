@@ -452,13 +452,13 @@ module Runeforge
       sha = msg.commit_sha.to_s[0, 7]
       case msg.type
       when "plan.request" then "· planning"
-      when "plan.done" then "✓ planned: #{plural(payload['locked_paths'].size, 'test file')} locked (#{sha})"
+      when "plan.done" then ["✓ planned: #{plural(payload['locked_paths'].size, 'test file')} locked (#{sha})", *skipped_note(payload)].join("\n  ")
       when "plan.failed" then "✗ planning failed: #{payload['reason']}"
       when "deps.check" then "· checking tools: #{Array(payload['tools']).join(', ')}"
       when "deps.ready" then "✓ tools available"
       when "deps.declined" then "✗ stopped: missing #{Array(payload['missing']).join(', ')}"
       when "code.request" then "· coding (attempt #{payload['attempt']})"
-      when "code.done" then "✓ coded: #{plural(Array(payload['changed_paths']).size, 'file')} changed (#{sha})"
+      when "code.done" then ["✓ coded: #{plural(Array(payload['changed_paths']).size, 'file')} changed (#{sha})", *skipped_note(payload)].join("\n  ")
       when "code.failed" then "✗ attempt #{payload['attempt']} failed: #{payload['reason'].to_s.lines.first&.strip}"
       when "test.request" then "· testing #{sha}"
       when "test.result"
@@ -475,6 +475,12 @@ module Runeforge
         [line, *Array(payload["warnings"]).map { |warning| "  ! #{warning}" }].join("\n  ")
       when "integrate.failed" then "✗ could not update the branch: #{payload['reason']}"
       end
+    end
+
+    def self.skipped_note(payload)
+      return [] if Array(payload["skipped"]).empty?
+
+      ["  ! left out of the commit (new and large: downloads or build output): #{payload['skipped'].join(', ')}"]
     end
 
     def report(directory, branch, created, finished)

@@ -208,6 +208,67 @@ RSpec.describe "Ticket to pull request" do
       expect(task[:attempts]).to eq(0)
     end
 
+    it "catches a setup command that isn't valid shell while planning, and plans again" do
+      plan = <<~SH
+        #{Helpers::PLAN_GREETING}
+        if [ -f #{tmpdir}/planned-once ]; then
+          printf '{"setup_command": "sh script/setup.sh"}' > .runeforge/project.json
+          mkdir -p script && printf 'echo set up\n' > script/setup.sh
+        else
+          touch #{tmpdir}/planned-once
+          printf '{"setup_command": "echo \\\\"unterminated"}' > .runeforge/project.json
+        fi
+      SH
+      env = env_with(code: Helpers::CODE_GREETING, plan:)
+      create(env)
+      task = drive(env, "T-1", until_status: "done")
+
+      failed = env.tasks.messages("T-1").find { |msg| msg.type == "plan.failed" }
+      expect(failed.payload["reason"]).to include("the setup command `echo \"unterminated` isn't valid shell, so no test ran")
+      expect(env.repos.fetch("demo")[:setup_command]).to eq("sh script/setup.sh")
+      expect(task[:attempts]).to eq(1)
+    end
+
+    it "sends an overlong command back to the planner instead of cutting it" do
+      long = "echo #{'x' * 1100}"
+      plan = <<~SH
+        #{Helpers::PLAN_GREETING}
+        printf '{"setup_command": "#{long}"}' > .runeforge/project.json
+      SH
+      env = env_with(code: Helpers::CODE_GREETING, plan:)
+      create(env)
+      task = drive(env, "T-1", until_status: "failed")
+      expect(task[:error]).to include("setup_command in .runeforge/project.json is 1105 characters (at most 1000)")
+      expect(env.repos.fetch("demo")[:setup_command].to_s).to be_empty
+    end
+
+    it "lets a later plan replace the commands plans recorded, never ones a person set" do
+      plan = ->(setup) { "#{Helpers::PLAN_GREETING}\nprintf '{\"setup_command\": \"#{setup}\"}' > .runeforge/project.json" }
+      env = env_with(code: Helpers::CODE_GREETING, plan: plan.("echo first"))
+      create(env)
+      drive(env, "T-1", until_status: "done")
+      expect(env.repos.fetch("demo")).to include(setup_command: "echo first", planned_commands: '["setup_command"]')
+
+      second = <<~SH
+        mkdir -p test
+        printf 'Say bye.\n' > .runeforge/spec.md
+        printf 'true\n' > test/bye_test.sh
+        printf '{"setup_command": "echo second"}' > .runeforge/project.json
+      SH
+      env2 = env_with(code: "mkdir -p lib && echo bye > lib/bye.txt", plan: second)
+      Runeforge::Intake.new(env2).create(repo: "demo", id: "T-2", title: "Bye", description: "Say bye")
+      drive(env2, "T-2", until_status: "done")
+      expect(env2.repos.fetch("demo")[:setup_command]).to eq("echo second")
+
+      third = second.sub("bye_test", "later_test").sub("echo second", "echo third")
+      env3 = env_with(code: "mkdir -p lib && echo later > lib/later.txt", plan: third)
+      # What `runeforge repo set demo --setup-command ...` does: the command is the person's now.
+      env3.repos.update("demo", setup_command: "echo mine", planned_commands: "[]")
+      Runeforge::Intake.new(env3).create(repo: "demo", id: "T-3", title: "Later", description: "Say later")
+      drive(env3, "T-3", until_status: "done")
+      expect(env3.repos.fetch("demo")[:setup_command]).to eq("echo mine")
+    end
+
     it "rejects acceptance tests that read .runeforge/" do
       plan = <<~SH
         mkdir -p test
@@ -411,6 +472,22 @@ RSpec.describe "Ticket to pull request" do
       code_done = env.tasks.messages("T-1").find { |msg| msg.type == "code.done" }
       expect(code_done.payload["changed_paths"]).to eq(["lib/greeting.txt"])
       expect(git("ls-tree", "-r", "--name-only", task[:head_sha])).not_to include("node_modules", ".venv", "__pycache__")
+    end
+
+    it "leaves big new downloads out of the coder's patch and says so, instead of failing the attempt" do
+      code = <<~SH
+        #{Helpers::CODE_GREETING}
+        mkdir -p chrome && head -c 6000000 /dev/zero > chrome/chrome.bin && echo x > chrome/README
+        head -c 2000000 /dev/zero > lib/huge.bin
+      SH
+      env = env_with(code:)
+      create(env)
+      task = drive(env, "T-1", until_status: "done")
+      code_done = env.tasks.messages("T-1").find { |msg| msg.type == "code.done" }
+      expect(code_done.payload["changed_paths"]).to eq(["lib/greeting.txt"])
+      expect(code_done.payload["skipped"]).to contain_exactly("chrome/ (5 MB)", "lib/huge.bin (1 MB)")
+      expect(Runeforge::Build.describe(code_done, merging: true)).to include("! left out of the commit (new and large")
+      expect(git("ls-tree", "-r", "--name-only", task[:head_sha])).not_to include("chrome", "huge.bin")
     end
 
     it "feeds test failures back to the coder and passes on the next attempt" do

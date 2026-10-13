@@ -280,6 +280,15 @@ never judges its own work and never runs next to your credentials.
 A failed test run or rejected check goes back to the coder with the failure output, until the
 task runs out of attempts or budget.
 
+**Test and setup commands:** the setup command runs before the tests in the same shell, so its
+exports apply, and a setup command that fails is reported as that, not as failing tests. The
+planner's check of its own plan runs both, so a setup command that isn't valid shell, or fails,
+sends the plan back to the planner. At test time, a setup command that isn't valid shell goes
+back to the planner without using coding attempts; one that fails goes to the coder, labelled,
+since its changes can break setup (a migration, the schema). Commands are never shortened: one
+over 1000 characters is sent back for the planner to put in a script. Commands a plan recorded
+are replaced by later plans' commands; ones set with `runeforge repo add` or `repo set` stay.
+
 ## How a step runs
 
 1. A worker claims a command and leases it; a heartbeat thread keeps the lease alive.
@@ -287,7 +296,9 @@ task runs out of attempts or budget.
    mounted.
 3. Inside the container, a script snapshots the tree in a throwaway repo, runs the agent CLI
    with the prompt from `.runeforge/prompt.md`, and writes everything it changed to
-   `.runeforge/changes.patch`.
+   `.runeforge/changes.patch`. Dependency folders are never included, nor are new directories
+   over 5 MB or new files over 1 MB (a browser downloaded by system tests, build output); the
+   step's output lists what was left out.
 4. The host reads the patch (refusing symlinks and oversized files), applies it to a temporary
    index of its own bare clone, checks it against the locked tests and size limits, and commits.
 5. The result message, the task update and the claim completion are written in one transaction.

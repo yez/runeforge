@@ -24,6 +24,10 @@ module Runeforge
         .tox/ vendor/bundle/ .bundle/ target/ .gradle/ .next/ .nuxt/ .turbo/ .cache/ coverage/ .aider*
       ].freeze
 
+      # New untracked directories and files over these sizes are left out of patches.
+      SKIP_DIR_KB = 5 * 1024
+      SKIP_FILE_KB = 1024
+
       # Shell run inside the sandbox around the agent CLI. It snapshots the exported tree in a
       # throwaway repo, runs the agent, then writes everything it changed to .runeforge/changes.patch.
       AGENT_SCRIPT = <<~SH
@@ -37,12 +41,38 @@ module Runeforge
         export RUNEFORGE_PROMPT
         ( %<command>s ) > .runeforge/agent.out 2> .runeforge/agent.err
         status=$?
+        # Big new directories and files the run downloaded or generated (a browser for system tests,
+        # build output) stay out of the patch; .runeforge/skipped lists them, with their size in KB.
+        : > .runeforge/skipped
+        skip() { printf '/%%s\\n' "${1%%/}" >> .git/info/exclude; printf '%%s %%s\\n' "$1" "$2" >> .runeforge/skipped; }
+        g ls-files -z --others --exclude-standard --directory | tr '\\0' '\\n' | while IFS= read -r path; do
+          [ -d "$path" ] || continue
+          kb=$(du -sk "$path" 2>/dev/null | cut -f1)
+          [ "${kb:-0}" -gt #{SKIP_DIR_KB} ] && skip "$path" "$kb"
+        done
+        g ls-files -z --others --exclude-standard | tr '\\0' '\\n' | while IFS= read -r path; do
+          [ -f "$path" ] || continue
+          kb=$(( $(wc -c < "$path") / 1024 ))
+          [ "$kb" -gt #{SKIP_FILE_KB} ] && skip "$path" "$kb"
+        done
         g add -A >/dev/null 2>&1
         g diff --cached --binary "$base" > .runeforge/changes.patch
         exit $status
       SH
 
       attr_reader :env, :msg, :sandbox, :task, :repo
+
+      # What the agent's run left out of its patch (see AGENT_SCRIPT): "chrome/ (270 MB)".
+      def skipped(workspace)
+        workspace.read_meta_text("skipped", max_bytes: 16_384).to_s.lines(chomp: true).first(20).filter_map do |line|
+          path, kb = line.rpartition(" ").values_at(0, 2)
+          next if path.empty?
+
+          "#{path} (#{kb.to_i >= 1024 ? "#{kb.to_i / 1024} MB" : "#{kb} KB"})"
+        end
+      rescue Workspace::UnsafeFile
+        []
+      end
 
       def self.call(env, msg, sandbox)
         role = new(env, msg, sandbox)

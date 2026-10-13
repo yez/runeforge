@@ -50,7 +50,11 @@ module Runeforge
            {"test_command": "...", "setup_command": "...", "run_command": "...", "run_command_new": false, "tools": ["..."]}
            - test_command runs the whole suite and exits non-zero on failure. Call the test runner directly
              (e.g. `python -m pytest`, `npx vitest run`, `bundle exec rspec`), not a script the coder could edit.#{"\n             This project already runs its tests with `#{test_command}`; that stays in use, so you can leave test_command out." unless test_command.to_s.strip.empty?}
-           - setup_command installs dependencies (e.g. `npm install`), or leave it out.
+           - setup_command installs dependencies and prepares what the tests need (e.g. `npm install`,
+             `bin/rails db:prepare`), or leave it out. It runs in the same shell before test_command, so its
+             exports apply. Keep each command to one line (at most 1000 characters, no nested quoting); put
+             anything longer in a script you commit with this plan (e.g. `script/runeforge_setup.sh`) and run that.
+             Commands you write here replace those an earlier plan wrote.
            - run_command is the one command that runs the project, and run_command_new says whether
              you defined it (see "How it runs" below). Leave both out for a library with nothing to run.
            - tools lists the command-line programs the tests need (e.g. ["node", "npm"]).

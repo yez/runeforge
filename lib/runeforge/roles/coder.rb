@@ -32,7 +32,8 @@ module Runeforge
           patch:, parent: sha, branch: task[:branch], locked: locked_paths.keys,
           message: Committer.message("runeforge: attempt #{attempt} for #{task[:id]}", trailers("Agent-Attempt" => attempt))
         )
-        result("code.done", { "attempt" => attempt, "changed_paths" => commit.changed_paths, "log_path" => run.log_path },
+        result("code.done", { "attempt" => attempt, "changed_paths" => commit.changed_paths, "log_path" => run.log_path,
+                              "skipped" => skipped(workspace).then { |list| list.empty? ? nil : list } }.compact,
                commit_sha: commit.sha, task_updates: updates.merge(head_sha: commit.sha))
       rescue Committer::PatchRejected, Workspace::UnsafeFile => e
         failed(only_meta_changes(workspace, e.message), run, updates || {})
@@ -45,7 +46,7 @@ module Runeforge
       CONTEST_BYTES = 16_384
 
       # Runeforge's own files in .runeforge/; anything else there was written by the agent.
-      OWN_META = %w[prompt.md agent.out agent.err changes.patch agent.rb contest.md].freeze
+      OWN_META = %w[prompt.md agent.out agent.err changes.patch agent.rb contest.md skipped].freeze
 
       # "Made no changes" when the agent did change files, but only in .runeforge/ (never committed).
       def only_meta_changes(workspace, message)

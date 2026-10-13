@@ -57,6 +57,8 @@ module Runeforge
         missing = interactive? ? missing_commands(msg) : []
         if msg.payload["passed"]
           send_to :reviewer, "review.request", sha: msg.commit_sha
+        elsif msg.payload["setup_failed"] == "syntax" && replans < Supervisor::Context::REPLANS
+          replan_setup!(msg)
         elsif missing.any? && dependency_checks < 3
           send_to :operator, "deps.check", sha: msg.commit_sha, tools: missing, resume: "test"
         else

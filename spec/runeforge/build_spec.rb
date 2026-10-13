@@ -448,7 +448,7 @@ RSpec.describe Runeforge::Build do
         env = build_env_for
         target = make_project("runeforge/inbox/greeting.md" => "# Add a greeting\n")
         env.db.drop_table(:runeforge_lessons)
-        env.db.alter_table(:runeforge_repos) { drop_column :devcontainer }
+        env.db.alter_table(:runeforge_repos) { drop_column :devcontainer; drop_column :planned_commands }
         env.db[Runeforge::DB::SCHEMA_TABLE].update(version: 8)
 
         inbox = described_class.inbox(env, dir: target, stdout: out)

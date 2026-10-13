@@ -211,7 +211,7 @@ module Runeforge
         end
 
         case service.image
-        when /(?:\A|\/)postgres(?:ql)?[:@]|(?:\A|\/)postgres(?:ql)?\z|postgis/ then ["pg_isready", "-q"]
+        when /(?:\A|\/)postgres(?:ql)?[:@]|(?:\A|\/)postgres(?:ql)?\z|postgis|pgvector|timescaledb/ then ["pg_isready", "-q"]
         when /(?:\A|\/)redis[:@]|(?:\A|\/)redis\z|valkey/ then ["redis-cli", "ping"]
         when /mysql|mariadb/ then ["sh", "-c", "mysqladmin ping --silent || mariadb-admin ping --silent"]
         end

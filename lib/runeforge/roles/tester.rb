@@ -11,21 +11,40 @@ module Runeforge
         end
 
         with_workspace(msg.commit_sha, "test") do |workspace|
-          script = [repo[:setup_command], repo[:test_command]].compact.reject(&:empty?).join(" && ")
-          run = sandbox.run(workdir: workspace.path, script:, env: {}, on_output: ->(chunk, stream) { output.write(chunk, stream:) })
-          output = [run.stdout, run.stderr].reject(&:empty?).join("\n")
+          run = sandbox.run(workdir: workspace.path, script: TestProbe.script(repo[:test_command]), env: TestProbe.env(repo[:setup_command]),
+                            on_output: ->(chunk, stream) { output.write(chunk, stream:) })
+          raw = [run.stdout, run.stderr].reject(&:empty?).join("\n")
+          setup_failed = TestProbe.setup_failure(raw)
+          output = TestProbe.clean(raw)
           passed = run.success?
-          reason = passed ? nil : (run.timed_out ? "tests timed out" : "tests failed (exit status #{run.exit_code})")
           result("test.result",
-                 { "passed" => passed, "exit_code" => run.exit_code, "timed_out" => run.timed_out, "reason" => reason,
+                 { "passed" => passed, "exit_code" => run.exit_code, "timed_out" => run.timed_out,
+                   "reason" => passed ? nil : reason(run, setup_failed), "setup_failed" => setup_failed,
                    "output_tail" => tail(output, limits["feedback_bytes"]), "warnings" => self.class.warnings(output, root: workspace.path),
-                   "log_path" => write_log("tester", output) },
+                   "log_path" => write_log("tester", output) }.compact,
                  commit_sha: msg.commit_sha)
         end
       end
     end
 
     class Tester
+      private
+
+      # A setup command that fails isn't a failing test, and says so.
+      def reason(run, setup_failed)
+        return "tests timed out" if run.timed_out
+
+        case setup_failed
+        when "syntax" then "the setup command isn't valid shell, so no test ran: `#{repo[:setup_command].to_s[0, 200]}`"
+        when "exit"
+          "the setup command failed (exit status #{run.exit_code}) before any test ran. Your changes may have broken it " \
+            "(a migration, the schema, a dependency); if the setup command itself is wrong, say so in .runeforge/contest.md"
+        else "tests failed (exit status #{run.exit_code})"
+        end
+      end
+
+      public
+
       # "Sources/X.swift:12:5: warning: ..." from swiftc and xcodebuild. Informational (passing is
       # still the exit status), but shown and handed to the coder: a Swift concurrency warning
       # went unseen until the app shipped with it.

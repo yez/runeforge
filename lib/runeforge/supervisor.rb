@@ -137,12 +137,26 @@ module Runeforge
 
       # Discards this step's plan and code and asks the planner again, with what went wrong. The
       # earlier steps' tests stay locked as they were; this step's own tests are the planner's again.
-      def replan!(reason)
+      # feedback: what the planner is told, when it isn't that its tests seem wrong.
+      def replan!(reason, feedback: nil)
         learn("replan", reason)
         update_task(locked_paths: JSON.generate(locks_before_plan), attempts: 0)
         restart_from!(task[:base_sha])
         send_to(:planner, "plan.request", sha: task[:base_sha], input: plan_input, replan: true,
-                                          feedback: replan_feedback(reason))
+                                          feedback: feedback || replan_feedback(reason))
+      end
+
+      # The setup command the plan recorded isn't valid shell: nothing the coder can change, so
+      # the planner writes it again (without costing coding attempts).
+      def replan_setup!(result)
+        output = result.payload["output_tail"].to_s
+        replan!("the setup command isn't valid shell", feedback: <<~TEXT.strip)
+          The setup command your plan recorded isn't valid shell, so no test could run: `#{@env.repos.fetch(task[:repo])[:setup_command]}`
+          #{output.empty? ? '' : "Output:\n#{output}\n"}
+          Write setup_command in .runeforge/project.json again. Put anything longer than a line or two, or anything with
+          nested quotes, in a script you commit with the plan (for example script/runeforge_setup.sh) and make
+          setup_command run it (`sh script/runeforge_setup.sh`). Your previous plan was discarded.
+        TEXT
       end
 
       # Adds the planner's tests to the locked set (earlier steps' tests stay locked).
@@ -157,10 +171,17 @@ module Runeforge
         return if project.empty?
 
         repo = @env.repos.fetch(task[:repo])
+        # A plan's test and setup commands replace the ones earlier plans recorded (a re-plan
+        # fixing a broken setup command must take effect), never ones a person set.
+        planned = RepoStore.planned(repo)
         updates = %i[test_command setup_command].each_with_object({}) do |key, fields|
-          value = project[key.to_s].to_s.strip
-          fields[key] = value if repo[key].to_s.strip.empty? && !value.empty?
+          value = RepoStore.command(repo, key, project)
+          next if value.empty? || value == repo[key].to_s.strip
+
+          fields[key] = value
+          planned |= [key.to_s]
         end
+        updates[:planned_commands] = JSON.generate(planned) if updates.any?
         # How to run the project is recorded once, like the test command; `runeforge repo set`
         # changes it. Its README is only required to say it when the planner defined it, never
         # for a project's own launch method.

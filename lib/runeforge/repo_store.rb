@@ -15,6 +15,19 @@ module Runeforge
 
     def table = @db[:runeforge_repos]
 
+    # The repo's commands that plans recorded (see .command); others were set by a person.
+    def self.planned(repo) = JSON.parse(repo[:planned_commands] || "[]")
+
+    # The command to use for `key` once a plan's project settings are recorded: the plan's, unless
+    # a person set this one (`runeforge repo add` or `repo set`).
+    def self.command(repo, key, project)
+      own = repo[key.to_sym].to_s.strip
+      planned = project[key.to_s].to_s.strip
+      return own if planned.empty? || !(own.empty? || self.planned(repo).include?(key.to_s))
+
+      planned
+    end
+
     def list = table.order(:name).all
 
     def fetch(name)

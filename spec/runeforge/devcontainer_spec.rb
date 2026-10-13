@@ -218,7 +218,7 @@ RSpec.describe Runeforge::Devcontainer do
     def log = File.readlines(File.join(tmpdir, "runtime.log"), chomp: true)
 
     it "starts the services on a private network, waits for them, runs, then removes them" do
-      services = [Runeforge::Devcontainer::Service.new(name: "postgres", image: "postgres:17", env: { "POSTGRES_PASSWORD" => "pw" }, healthcheck: nil),
+      services = [Runeforge::Devcontainer::Service.new(name: "postgres", image: "pgvector/pgvector:pg17", env: { "POSTGRES_PASSWORD" => "pw" }, healthcheck: nil),
                   Runeforge::Devcontainer::Service.new(name: "cache", image: "example/cache", env: {}, healthcheck: ["CMD", "ping-it"])]
       sandbox = Runeforge::Sandbox::Container.new(runtime:, image: "app:dev", network: "bridge", cpus: 1, memory: "1g", pids: 64,
                                                   timeout: 30, services:, name: "rails-app",
@@ -230,7 +230,7 @@ RSpec.describe Runeforge::Devcontainer do
       net = log.first[/network create (\S+)/, 1]
       expect(net).to end_with("-net")
       id = net.delete_suffix("-net")
-      expect(log[1]).to start_with("run -d --rm --name #{id}-postgres --network #{net} --network-alias postgres").and end_with("-e POSTGRES_PASSWORD=pw postgres:17")
+      expect(log[1]).to start_with("run -d --rm --name #{id}-postgres --network #{net} --network-alias postgres").and end_with("-e POSTGRES_PASSWORD=pw pgvector/pgvector:pg17")
       expect(log[2]).to include("--network-alias cache", "example/cache")
       expect(log[3..5]).to eq(["exec #{id}-postgres pg_isready -q", "exec #{id}-postgres pg_isready -q", "exec #{id}-cache ping-it"])
       expect(log[6]).to start_with("run --rm --name #{id} --network #{net} --network-alias rails-app --read-only").and include("-e DB_HOST=postgres -e PATH=/opt/app/bin:/usr/bin")

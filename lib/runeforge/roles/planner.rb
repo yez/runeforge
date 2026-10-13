@@ -48,6 +48,11 @@ module Runeforge
         end
 
         project = read_project(workspace)
+        if (long = COMMANDS.find { |key| project[key].to_s.size > COMMAND_MAX })
+          return failed("#{long} in .runeforge/project.json is #{project[long].size} characters (at most #{COMMAND_MAX}): " \
+                        "put the steps in a script you commit with the plan (for example script/runeforge_setup.sh) " \
+                        "and make #{long} run it", run, updates, retryable: true)
+        end
         if repo[:test_command].to_s.strip.empty? && project["test_command"].to_s.empty?
           return failed("the plan doesn't say how to run the tests (test_command in .runeforge/project.json)", run, updates,
                         retryable: true)
@@ -79,7 +84,8 @@ module Runeforge
         end
 
         spec = workspace.read_meta_text("spec.md", max_bytes: limits["max_spec_bytes"]).to_s
-        result("plan.done", { "spec" => spec, "locked_paths" => locked, "project" => project, "log_path" => run.log_path },
+        result("plan.done", { "spec" => spec, "locked_paths" => locked, "project" => project, "log_path" => run.log_path,
+                              "skipped" => skipped(workspace).then { |list| list.empty? ? nil : list } }.compact,
                commit_sha: commit.sha, task_updates: updates)
       rescue Committer::PatchRejected, Workspace::UnsafeFile => e
         failed(e.message, run, updates || {}, retryable: true)
@@ -88,15 +94,19 @@ module Runeforge
       # .runeforge/project.json: {"test_command": "...", "setup_command": "...", "run_command": "...",
       # "run_command_new": false, "tools": ["cargo"]}.
       # Written by the agent, so every field is checked before it is used.
+      # Commands are never shortened (a cut command is broken shell); one over COMMAND_MAX fails the plan.
+      COMMANDS = %w[test_command setup_command run_command].freeze
+      COMMAND_MAX = 1000
+
       def read_project(workspace)
         raw = workspace.read_meta_text("project.json", max_bytes: 16_384)
         data = raw ? JSON.parse(raw) : {}
         return {} unless data.is_a?(Hash)
 
         {
-          "test_command" => data["test_command"].is_a?(String) ? data["test_command"].strip[0, 500] : nil,
-          "setup_command" => data["setup_command"].is_a?(String) ? data["setup_command"].strip[0, 500] : nil,
-          "run_command" => data["run_command"].is_a?(String) && !data["run_command"].strip.empty? ? data["run_command"].strip[0, 500] : nil,
+          "test_command" => data["test_command"].is_a?(String) ? data["test_command"].strip : nil,
+          "setup_command" => data["setup_command"].is_a?(String) ? data["setup_command"].strip : nil,
+          "run_command" => data["run_command"].is_a?(String) && !data["run_command"].strip.empty? ? data["run_command"].strip : nil,
           "run_command_new" => [true, false].include?(data["run_command_new"]) ? data["run_command_new"] : nil,
           "tools" => Array(data["tools"]).grep(String).grep(TOOL).uniq.first(20)
         }.compact
@@ -155,15 +165,21 @@ module Runeforge
       # expected; tests not running at all means the command can never pass, and tests that don't
       # compile were never checked against the locked ones, so either fails the plan.
       def probe_tests(sha, project)
-        # Same precedence as the tester: the repo's command once set, else the plan's.
-        test_command = repo[:test_command].to_s.strip
-        test_command = project["test_command"].to_s.strip if test_command.empty?
+        # The commands the tester will use once this plan is recorded (see Supervisor#apply_project!).
+        test_command = RepoStore.command(repo, "test_command", project)
         return nil if test_command.empty?
 
-        setup = (repo[:setup_command].to_s.strip.empty? ? project["setup_command"] : repo[:setup_command]).to_s.strip
-        script = [setup, test_command].reject(&:empty?).join(" && ")
-        run = with_workspace(sha, "probe") { |workspace| sandbox.run(workdir: workspace.path, script:, env: {}) }
-        output = [run.stdout, run.stderr].reject(&:empty?).join("\n")
+        setup = RepoStore.command(repo, "setup_command", project)
+        run = with_workspace(sha, "probe") do |workspace|
+          sandbox.run(workdir: workspace.path, script: TestProbe.script(test_command), env: TestProbe.env(setup))
+        end
+        raw = [run.stdout, run.stderr].reject(&:empty?).join("\n")
+        output = TestProbe.clean(raw)
+        if (setup_failed = TestProbe.setup_failure(raw))
+          what = setup_failed == "syntax" ? "isn't valid shell" : "failed (exit status #{run.exit_code})"
+          return "the setup command `#{setup[0, 300]}` #{what}, so no test ran. Fix setup_command; put anything longer " \
+                 "than a line or two in a script committed with the plan and run that. Output: #{tail(output, 1500)}"
+        end
         if (why = TestProbe.nothing_ran(output, run.exit_code))
           return "the test command `#{test_command}` didn't run the acceptance tests (#{why}): #{tail(output, 1500)}"
         end
