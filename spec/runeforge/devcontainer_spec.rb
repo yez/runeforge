@@ -41,6 +41,7 @@ RSpec.describe Runeforge::Devcontainer do
             image: seleniarm/standalone-chromium
           redis:
             image: redis:7
+            shm_size: 256mb
           postgres:
             image: postgres:17
             environment:
@@ -64,6 +65,7 @@ RSpec.describe Runeforge::Devcontainer do
       expect(devcontainer.main).to eq("rails-app")
       expect(devcontainer.source).to eq("dockerfile" => ".devcontainer/Dockerfile", "context" => ".", "args" => {})
       expect(devcontainer.services.map(&:name)).to eq(%w[selenium redis postgres])
+      expect(devcontainer.services.map(&:shm_size)).to eq([nil, "256mb", nil])
       expect(devcontainer.services.last).to have_attributes(image: "postgres:17",
                                                             env: { "POSTGRES_USER" => "postgres", "POSTGRES_PASSWORD" => "postgres" })
       expect(devcontainer.env).to eq("SELENIUM_HOST" => "selenium", "REDIS_URL" => "redis://redis:6379/1", "DB_HOST" => "postgres")
@@ -235,6 +237,17 @@ RSpec.describe Runeforge::Devcontainer do
       expect(log[3..5]).to eq(["exec #{id}-postgres pg_isready -q", "exec #{id}-postgres pg_isready -q", "exec #{id}-cache ping-it"])
       expect(log[6]).to start_with("run --rm --name #{id} --network #{net} --network-alias rails-app --read-only").and include("-e DB_HOST=postgres -e PATH=/opt/app/bin:/usr/bin")
       expect(log[7..]).to eq(["rm -f #{id}-postgres #{id}-cache", "network rm #{net}"])
+    end
+
+    it "gives browser services 2 GB of /dev/shm, and others what the compose file says" do
+      services = [Runeforge::Devcontainer::Service.new(name: "selenium", image: "seleniarm/standalone-chromium", env: {}, healthcheck: nil),
+                  Runeforge::Devcontainer::Service.new(name: "cache", image: "example/cache", env: {}, healthcheck: nil, shm_size: "256mb"),
+                  Runeforge::Devcontainer::Service.new(name: "plain", image: "example/plain", env: {}, healthcheck: nil)]
+      Runeforge::Sandbox::Container.new(runtime:, image: "app", network: "bridge", cpus: 1, memory: "1g", pids: 64, timeout: 30, services:)
+                                   .run(workdir: tmpdir, script: "true")
+      expect(log[1]).to include("--memory 1g --shm-size 2g seleniarm/standalone-chromium")
+      expect(log[2]).to include("--memory 1g --shm-size 256mb example/cache")
+      expect(log[3]).not_to include("--shm-size")
     end
 
     it "says the sandbox is unavailable, not that the agent failed, when the runtime is missing or broken" do

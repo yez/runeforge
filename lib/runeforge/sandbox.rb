@@ -181,10 +181,21 @@ module Runeforge
         @services.each do |service|
           env = service.env.flat_map { |name, value| ["-e", "#{name}=#{value}"] }
           started = system(@runtime, "run", "-d", "--rm", "--name", service_container(service), "--network", network_name,
-                           "--network-alias", service.name, "--cpus", @cpus.to_s, "--memory", @memory.to_s, *env, service.image, **quiet)
+                           "--network-alias", service.name, "--cpus", @cpus.to_s, "--memory", @memory.to_s,
+                           *shm(service), *env, service.image, **quiet)
           raise Unavailable, "the #{service.name} service (#{service.image}) didn't start" unless started
         end
         @services.each { |service| wait_ready(service) }
+      end
+
+      # Docker gives a container 64 MB of /dev/shm, and Chrome crashes its tabs ("page crash") with
+      # that little. Browser images get 2 GB, as Selenium's docs say, unless the compose file says.
+      BROWSER_IMAGE = /selenium|seleniarm|chrom|browserless|playwright|puppeteer/
+      BROWSER_SHM = "2g"
+
+      def shm(service)
+        size = service.shm_size || (BROWSER_SHM if service.image.match?(BROWSER_IMAGE))
+        size ? ["--shm-size", size] : []
       end
 
       # The service's own healthcheck, else a check for images known to need one, else none.

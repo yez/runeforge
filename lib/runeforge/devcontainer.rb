@@ -26,9 +26,15 @@ module Runeforge
       "node" => [], "github-cli" => %w[gh] # Runeforge's layer installs Node when the image lacks it
     }.freeze
 
-    Service = Data.define(:name, :image, :env, :healthcheck) do
-      def to_h = { "name" => name, "image" => image, "env" => env, "healthcheck" => healthcheck }.compact
-      def self.from_h(hash) = new(name: hash["name"], image: hash["image"], env: hash["env"] || {}, healthcheck: hash["healthcheck"])
+    # shm_size: the compose file's, as given (bytes, or "2gb"), or nil for the sandbox's default.
+    Service = Data.define(:name, :image, :env, :healthcheck, :shm_size) do
+      def initialize(name:, image:, env:, healthcheck:, shm_size: nil) = super
+
+      def to_h = { "name" => name, "image" => image, "env" => env, "healthcheck" => healthcheck, "shm_size" => shm_size }.compact
+
+      def self.from_h(hash)
+        new(name: hash["name"], image: hash["image"], env: hash["env"] || {}, healthcheck: hash["healthcheck"], shm_size: hash["shm_size"])
+      end
     end
 
     # path: devcontainer.json. source: { "image" => ... } or { "dockerfile", "context", "args" }
@@ -348,7 +354,7 @@ module Runeforge
 
         test = other.dig("healthcheck", "test")
         @services << Service.new(name:, image: other["image"].to_s, env: environment(other["environment"]),
-                                 healthcheck: test && Array(test).map(&:to_s))
+                                 healthcheck: test && Array(test).map(&:to_s), shm_size: other["shm_size"]&.to_s)
       end
     end
 
