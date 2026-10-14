@@ -30,10 +30,11 @@ module Runeforge
         prompt = Prompts.plan(task:, input:, test_globs:, test_command: repo[:test_command], locked_paths: locked_paths.keys,
                               environment: verdict.environment.description, feedback: msg.payload["feedback"],
                               apple: apple_toolchain(verdict.platform), run_command: repo[:run_command],
-                              pitfalls:)
+                              pitfalls:, setup_command: repo[:setup_command],
+                              setup_fixed: !RepoStore.planned(repo).include?("setup_command"))
         # Every plan, a re-plan included, starts a conversation for the coder to continue.
         conversation = conversations? ? env.conversations.start(task_id: task[:id], repo: task[:repo], adapter: agent.adapter.name) : nil
-        run = run_agent(workspace, prompt, conversation:)
+        run = run_agent(workspace, prompt, conversation:, setup: repo[:setup_command])
         updates = usage_updates(run.usage)
         failure = agent_failure(run)
         return failed(failure, run, updates) if failure
@@ -170,10 +171,15 @@ module Runeforge
         return nil if test_command.empty?
 
         setup = RepoStore.command(repo, "setup_command", project)
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         run = with_workspace(sha, "probe") do |workspace|
           sandbox.run(workdir: workspace.path, script: TestProbe.script(test_command), env: TestProbe.env(setup))
         end
         raw = [run.stdout, run.stderr].reject(&:empty?).join("\n")
+        # Kept so a slow or puzzling probe can be looked into: <logs>/<task>/<message>-probe.log.
+        seconds = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).round
+        write_log("probe", "$ #{setup.empty? ? '' : "#{setup} && "}#{test_command}\n" \
+                           "# exit #{run.exit_code.inspect} after #{seconds}s\n\n#{raw}")
         output = TestProbe.clean(raw)
         if (setup_failed = TestProbe.setup_failure(raw))
           what = setup_failed == "syntax" ? "isn't valid shell" : "failed (exit status #{run.exit_code})"

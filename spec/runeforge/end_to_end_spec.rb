@@ -255,6 +255,49 @@ RSpec.describe "Ticket to pull request" do
       expect(task[:attempts]).to eq(1)
     end
 
+    it "runs the project's configured setup command before the planner and the coder, and keeps it over the plan's" do
+      plan = <<~SH
+        #{Helpers::PLAN_GREETING}
+        cat prepared.txt > #{tmpdir}/planner-saw
+        printf '{"setup_command": "echo planned"}' > .runeforge/project.json
+      SH
+      code = <<~SH
+        #{Helpers::CODE_GREETING}
+        cat prepared.txt > #{tmpdir}/coder-saw
+        printf '%s' "$RUNEFORGE_PROMPT" > #{tmpdir}/coder-prompt
+      SH
+      env = build_env("agent" => { "command" => "sh #{fake_agent(plan:, code:)}" },
+                      "projects" => { "demo" => { "setup_command" => "echo prepared > prepared.txt" } })
+      add_repo(env, url: origin)
+      create(env)
+      task = drive(env, "T-1", until_status: "done")
+
+      expect(File.read(File.join(tmpdir, "planner-saw"))).to eq("prepared\n")
+      expect(File.read(File.join(tmpdir, "coder-saw"))).to eq("prepared\n")
+      expect(File.read(File.join(tmpdir, "coder-prompt"))).to include("## Setup", "`echo prepared > prepared.txt`")
+      expect(env.repos.fetch("demo")[:setup_command]).to eq("echo prepared > prepared.txt")
+      # What the setup command made is part of the workspace, not of the work.
+      expect(git("ls-tree", "-r", "--name-only", task[:merged_sha])).not_to include("prepared.txt")
+      probe = Dir[File.join(env.logs_dir("T-1"), "*-probe.log")]
+      expect(probe.size).to eq(1)
+      expect(File.read(probe.first)).to start_with("$ echo prepared > prepared.txt && sh test/run.sh\n# exit 1 after ")
+    end
+
+    it "tells the coder when the setup command failed before it started" do
+      code = <<~SH
+        #{Helpers::CODE_GREETING}
+        printf '%s' "$RUNEFORGE_PROMPT" > #{tmpdir}/coder-prompt
+      SH
+      env = build_env("agent" => { "command" => "sh #{fake_agent(plan: Helpers::PLAN_GREETING, code:)}" },
+                      "projects" => { "demo" => { "setup_command" => "echo no database; exit 3" } })
+      add_repo(env, url: origin)
+      create(env)
+      drive(env, "T-1", until_status: %w[done failed])
+
+      expect(File.read(File.join(tmpdir, "coder-prompt")))
+        .to include("## The setup command failed\nRuneforge ran `echo no database; exit 3` before you started and it exited with status 3.")
+    end
+
     it "sends an overlong command back to the planner instead of cutting it" do
       long = "echo #{'x' * 1100}"
       plan = <<~SH

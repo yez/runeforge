@@ -12,6 +12,11 @@ RSpec.describe Runeforge::Adapters do
     expect(build("claude_code", model: "claude-opus-5-5").command).to include("--model claude-opus-5-5")
   end
 
+  it "keeps Claude Code's commands in the foreground, so a run ends when the agent does" do
+    expect(build("claude_code").run_env).to eq("BASH_DEFAULT_TIMEOUT_MS" => "600000", "BASH_MAX_TIMEOUT_MS" => "1200000",
+                                               "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS" => "1")
+  end
+
   it "gives Claude Code its prompt on stdin, never on the command line" do
     command = build("claude_code").command
     expect(command).to end_with("< .runeforge/prompt.md")

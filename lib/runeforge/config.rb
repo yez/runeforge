@@ -70,9 +70,11 @@ module Runeforge
     end
 
     # Settings that can differ per project (see "projects" in DEFAULTS).
-    PROJECT_KEYS = %w[manual_merge merge_method sandbox launch_check].freeze
+    PROJECT_KEYS = %w[manual_merge merge_method sandbox launch_check setup_command].freeze
     MERGE_METHODS = %w[merge squash rebase].freeze
     SANDBOX_MODES = %w[docker podman none].freeze
+    # Project keys with no top-level setting, read with their own methods.
+    OWN_KEYS = %w[sandbox setup_command].freeze
     CONVERSATION_SCOPES = %w[step none].freeze
 
     def self.project_problems(projects)
@@ -93,6 +95,9 @@ module Runeforge
         end
         if settings.key?("sandbox") && !SANDBOX_MODES.include?(settings["sandbox"].to_s)
           found << "`projects.#{project}.sandbox` must be one of #{SANDBOX_MODES.join(', ')} (none runs agents and tests on this machine)"
+        end
+        if settings.key?("setup_command") && !(settings["setup_command"].is_a?(String) && !settings["setup_command"].strip.empty?)
+          found << "`projects.#{project}.setup_command` must be a command, e.g. \"sh script/test_setup.sh\""
         end
         found
       end
@@ -226,6 +231,8 @@ module Runeforge
       # Per-project overrides of the settings in PROJECT_KEYS, keyed by the project's registered
       # repo name, its directory, or its git URL:
       #   projects: { "~/code/payments": { manual_merge: true } }
+      # setup_command (only per project) prepares a checkout for the tests, before the planner's
+      # and coder's agents start and before every test run; a plan can't replace it.
       "projects" => {},
       # Agents that go through the motions (sleeps and canned output) without calling an LLM,
       # git or the network. See Runeforge::DryRun.
@@ -278,7 +285,7 @@ module Runeforge
     # if one matches the repo's name, directory or git URL, else the top-level value.
     def for_project(repo, key)
       key = key.to_s
-      raise ArgumentError, "#{key} can't be set per project" unless PROJECT_KEYS.include?(key) && key != "sandbox"
+      raise ArgumentError, "#{key} can't be set per project" unless PROJECT_KEYS.include?(key) && !OWN_KEYS.include?(key)
 
       entry = repo && project_entry(repo)
       entry&.key?(key) ? entry[key] : self[key]
@@ -290,6 +297,10 @@ module Runeforge
     def sandbox_mode_for(repo)
       (repo && project_entry(repo)&.dig("sandbox")) || dig("sandbox", "mode")
     end
+
+    # The setup command a person set for this project (`projects.<project>.setup_command`), or nil.
+    # It wins over the repo's recorded one, a plan's included (see RepoStore#fetch).
+    def setup_command_for(repo) = repo && project_entry(repo)&.dig("setup_command")&.strip
 
     def project_entry(repo)
       names = [repo[:name], repo[:url]].compact.map(&:to_s)

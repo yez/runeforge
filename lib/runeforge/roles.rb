@@ -33,6 +33,19 @@ module Runeforge
       AGENT_SCRIPT = <<~SH
         set -u
         mkdir -p "$HOME" 2>/dev/null
+        # The project's setup command (Tailwind, the test database, dependencies) runs before the
+        # agent starts, and before the base commit so what it changes stays out of the patch.
+        if [ -n "${RUNEFORGE_SETUP:-}" ]; then
+          ( eval "$RUNEFORGE_SETUP" ) > .runeforge/setup.out 2>&1
+          setup_status=$?
+          if [ "$setup_status" -ne 0 ]; then
+            {
+              printf '\\n## The setup command failed\\n'
+              printf 'Runeforge ran `%%s` before you started and it exited with status %%s. ' "$RUNEFORGE_SETUP" "$setup_status"
+              printf 'Its output is in .runeforge/setup.out: read it and fix what you can before running the tests.\\n'
+            } >> .runeforge/prompt.md
+          fi
+        fi
         g() { git -c core.hooksPath=/dev/null -c commit.gpgsign=false -c user.name=runeforge -c user.email=runeforge@localhost "$@"; }
         { g init -q . && printf '%%s\\n' #{PATCH_EXCLUDES.map { |pattern| "'#{pattern}'" }.join(' ')} >> .git/info/exclude && g add -A && g commit -q --allow-empty -m runeforge-base; } >/dev/null 2>&1 \\
           || { echo "runeforge: could not initialise the workspace repository" >&2; exit 97; }
@@ -125,13 +138,14 @@ module Runeforge
 
       # conversation: the Conversations row this run continues (or just started), or nil for a run
       # of its own.
-      def run_agent(workspace, prompt, conversation: nil)
+      # setup: the project's setup command, run in the workspace before the agent starts.
+      def run_agent(workspace, prompt, conversation: nil, setup: nil)
         workspace.write_meta("prompt.md", prompt)
         agent.adapter.files.each { |name, content| workspace.write_meta(name, content) }
         script = format(AGENT_SCRIPT, command: agent.adapter.command)
         # The agent's output goes to files in the workspace; follow them while it runs.
         files = { "stdout" => File.join(workspace.meta_dir, "agent.out"), "stderr" => File.join(workspace.meta_dir, "agent.err") }
-        run_env = env.agent_key_env(role, project: repo).merge(agent.adapter.run_env)
+        run_env = env.agent_key_env(role, project: repo).merge(agent.adapter.run_env).merge(TestProbe.env(setup))
         restored = conversation ? hand_over(conversation, workspace, run_env) : []
         sessions = conversation && agent.adapter.name == "claude_code" ? env.conversations.sessions_dir(conversation) : nil
         run = output.follow(files) { sandbox.run(workdir: workspace.path, script:, env: run_env, sessions:) }

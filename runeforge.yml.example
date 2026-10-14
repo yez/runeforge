@@ -51,14 +51,17 @@ merge_method: merge                    # GitHub only: merge | squash | rebase
 launch_check: true                     # Apple apps built on this Mac: before merging, run the run command and check the app
                                        # launches and keeps running on the simulator (opens the simulator window briefly)
 
-# Per-project overrides of manual_merge, merge_method, sandbox and launch_check. Name a project by its directory, its
-# registered repo name (`runeforge repo list`) or its git URL:
+# Per-project overrides of manual_merge, merge_method, sandbox and launch_check, and each project's
+# setup_command. Name a project by its directory, its registered repo name (`runeforge repo list`) or
+# its git URL:
 projects: {}
 # projects:
 #   ~/code/payments:                   # a local project: review everything by hand
 #     manual_merge: true
 #   git@github.com:acme/api.git:       # a GitHub repo: merge automatically, squashed
 #     merge_method: squash
+#   ~/code/shop:                       # prepares each checkout before the planner, the coder and
+#     setup_command: sh script/test_setup.sh   # every test run; plans can't replace it
 
 inbox:
   enabled: true                        # build plans committed to each project's runeforge/inbox/

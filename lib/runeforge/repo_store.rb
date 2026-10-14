@@ -8,9 +8,13 @@ module Runeforge
 
     NAME_FORMAT = /\A[A-Za-z0-9][A-Za-z0-9._-]{0,99}\z/
 
-    def initialize(db, root)
+    # setup_command: the setup command a person set for a repo in runeforge.yml (or nil), given
+    # the repo's row. It replaces the recorded one in every row this returns, and plans can't
+    # change it.
+    def initialize(db, root, setup_command: nil)
       @db = db
       @root = root
+      @setup_command = setup_command
     end
 
     def table = @db[:runeforge_repos]
@@ -28,11 +32,12 @@ module Runeforge
       planned
     end
 
-    def list = table.order(:name).all
+    def list = table.order(:name).all.map { |row| configured(row) }
 
     def fetch(name)
-      table.where(name: name.to_s).first ||
-        raise(Error, "unknown repo #{name}; add it with `runeforge repo add`")
+      row = table.where(name: name.to_s).first ||
+            raise(Error, "unknown repo #{name}; add it with `runeforge repo add`")
+      configured(row)
     end
 
     def add(name:, url:, test_command:, base_branch: "main", image: nil, setup_command: nil)
@@ -143,6 +148,15 @@ module Runeforge
     end
 
     private
+
+    # The row with the configured setup command in place, recorded as a person's (not planned).
+    def configured(row)
+      command = @setup_command&.call(row)
+      return row if command.nil? || command.empty?
+
+      planned = self.class.planned(row) - ["setup_command"]
+      row.merge(setup_command: command, planned_commands: JSON.generate(planned))
+    end
 
     def ancestor?(dir, older, newer)
       !Git.run("merge-base", "--is-ancestor", older, newer, dir:, allow_failure: true).nil?

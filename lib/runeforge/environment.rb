@@ -21,7 +21,7 @@ module Runeforge
 
     def tasks = (@tasks ||= Tasks.new(db))
 
-    def repos = (@repos ||= RepoStore.new(db, File.join(home, "repos")))
+    def repos = (@repos ||= RepoStore.new(db, File.join(home, "repos"), setup_command: ->(repo) { config.setup_command_for(repo) }))
 
     def conversations = (@conversations ||= Conversations.new(db, home:))
 

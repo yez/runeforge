@@ -18,8 +18,9 @@ module Runeforge
         conversation = conversations? ? env.conversations.latest(task[:id]) : nil
         prompt = Prompts.code(task:, attempt:, locked_paths: locked_paths.keys, test_command: repo[:test_command],
                               run_command: repo[:run_command], run_docs_required: repo[:run_docs_required] == true,
-                              feedback: msg.payload["feedback"], apple: apple_toolchain, continuing: continuing?(conversation))
-        run = run_agent(workspace, prompt, conversation:)
+                              feedback: msg.payload["feedback"], apple: apple_toolchain, continuing: continuing?(conversation),
+                              setup_command: repo[:setup_command])
+        run = run_agent(workspace, prompt, conversation:, setup: repo[:setup_command])
         updates = usage_updates(run.usage)
         failure = agent_failure(run)
         return failed(failure, run, updates) if failure
@@ -46,7 +47,7 @@ module Runeforge
       CONTEST_BYTES = 16_384
 
       # Runeforge's own files in .runeforge/; anything else there was written by the agent.
-      OWN_META = %w[prompt.md agent.out agent.err changes.patch agent.rb contest.md skipped].freeze
+      OWN_META = %w[prompt.md agent.out agent.err changes.patch agent.rb contest.md skipped setup.out].freeze
 
       # "Made no changes" when the agent did change files, but only in .runeforge/ (never committed).
       def only_meta_changes(workspace, message)

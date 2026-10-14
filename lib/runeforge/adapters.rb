@@ -154,6 +154,16 @@ module Runeforge
       STARTUP = "--exclude-dynamic-system-prompt-sections --strict-mcp-config --disable-slash-commands " \
                 "--tools #{TOOLS.join(',')}".freeze
 
+      # Claude Code moves a Bash command that runs past 2 minutes to the background, and `claude -p`
+      # doesn't exit while one is running: a step's coder polled a backgrounded test run for 10
+      # minutes, then sat 6 more after finishing until its leftover watcher was stopped. Commands
+      # run in the foreground for up to 10 minutes (20 when the agent asks), inside the sandbox's
+      # own timeout.
+      def run_env
+        { "BASH_DEFAULT_TIMEOUT_MS" => "600000", "BASH_MAX_TIMEOUT_MS" => "1200000",
+          "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS" => "1" }
+      end
+
       def command
         # Inside a container the container is the permission boundary. On the host (`sandbox: none`,
         # chosen per project) the agent must still run the toolchain (swift test, xcodebuild), which

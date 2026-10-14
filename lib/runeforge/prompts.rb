@@ -7,14 +7,18 @@ module Runeforge
     # run_command: how the project already runs, once Runeforge has recorded it. Until then the
     # planner gets the full "How it runs" conventions; afterwards one line, to keep the prompt short.
     # pitfalls: lessons from earlier steps of this project that went wrong (see Memory).
+    # setup_command: the project's setup command, which Runeforge ran before the agent started;
+    # setup_fixed: a person set it, so a plan can't replace it.
     def plan(task:, input:, test_globs:, test_command:, locked_paths: [], environment: nil, feedback: nil, apple: nil,
-             run_command: nil, pitfalls: [])
+             run_command: nil, pitfalls: [], setup_command: nil, setup_fixed: false)
+      setup_command = setup_command.to_s.strip
       sections = ["You are the planning agent for task #{task[:id]}."]
       if environment
         sections << "## Environment\nYou, the coder and the tests all run on #{environment}. Plan only what can be " \
                     "built and tested here; if the request needs a platform toolchain this environment lacks, " \
-                    "write that to `.runeforge/blocked.md` (see below) instead of planning around it."
+                    "write that to `.runeforge/blocked.md` (see below) instead of planning around it.\n#{working_section}"
       end
+      sections << setup_section(setup_command) unless setup_command.empty?
       sections << apple_section(apple) if apple
       if input["context"]
         sections << "## The whole request (you are doing step #{input['step']})\n#{input['context']}"
@@ -54,7 +58,7 @@ module Runeforge
              `bin/rails db:prepare`), or leave it out. It runs in the same shell before test_command, so its
              exports apply. Keep each command to one line (at most 1000 characters, no nested quoting); put
              anything longer in a script you commit with this plan (e.g. `script/runeforge_setup.sh`) and run that.
-             Commands you write here replace those an earlier plan wrote.
+             Commands you write here replace those an earlier plan wrote.#{"\n             This project's setup command is set for it in Runeforge (`#{setup_command}`) and stays in use, so leave setup_command out;\n             if this step needs more set up, add it to the script that command runs." if setup_fixed && !setup_command.empty?}
            - run_command is the one command that runs the project, and run_command_new says whether
              you defined it (see "How it runs" below). Leave both out for a library with nothing to run.
            - tools lists the command-line programs the tests need (e.g. ["node", "npm"]).
@@ -136,7 +140,7 @@ module Runeforge
     # continuing: the coder carries on the conversation the planner (or its previous attempt) had,
     # so it already knows the project and the spec, and the prompt says what changed instead.
     def code(task:, attempt:, locked_paths:, test_command:, feedback: nil, run_command: nil, run_docs_required: false, apple: nil,
-             continuing: false)
+             continuing: false, setup_command: nil)
       sections = [<<~PROMPT]
         #{continuing ? continuing_note(task, attempt) : coder_intro(task, attempt)}
 
@@ -154,7 +158,10 @@ module Runeforge
         Do not change anything under `runeforge/` (the project's plan inbox); such changes are rejected.
         Do not put anything else in `.runeforge/`: it's Runeforge's scratch space and is never committed.
         Do not commit. Leave your changes in the working tree.
+
+        #{working_section}
       PROMPT
+      sections << "#{setup_section(setup_command)}\n" unless setup_command.to_s.strip.empty?
       sections << "#{apple_section(apple)}\n" if apple
       sections << "## Feedback from the previous attempt\n#{feedback}\n" if feedback && !feedback.to_s.strip.empty?
       sections.join("\n")
@@ -183,6 +190,23 @@ module Runeforge
         - A run script must fail (exit non-zero) when it can't build, install, launch or show the app, never warn and
           carry on. Runeforge runs the project's run command before merging and rejects work whose app doesn't
           launch and keep running.
+      SECTION
+    end
+
+    # Claude Code moves a command that runs past its timeout to the background, and an agent that
+    # then polls for it in a loop, or starts the suite again beside it, lost 20 minutes of a step.
+    def working_section
+      "Run commands, the test suite included, in the foreground and wait for them to finish, even " \
+        "if that takes minutes. Don't start background jobs or poll loops, and don't run two test runs at " \
+        "once: they share one test database."
+    end
+
+    def setup_section(setup_command)
+      <<~SECTION.chomp
+        ## Setup
+        Runeforge ran the project's setup command, `#{setup_command}`, in this workspace before you started
+        (its output is in .runeforge/setup.out), and runs it before every test run. Run it again yourself
+        after changing what it prepares (a migration, assets, dependencies) and before running the tests.
       SECTION
     end
 

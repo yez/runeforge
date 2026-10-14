@@ -62,15 +62,24 @@ RSpec.describe Runeforge::Config, "per-project settings" do
     path = File.join(tmpdir, "runeforge.yml")
     File.write(path, <<~YAML)
       projects:
-        ~/code/emoji-tasks: { manual_merge: "yes", merge_method: fast, poll_seconds: 1, launch_check: "on" }
+        ~/code/emoji-tasks: { manual_merge: "yes", merge_method: fast, poll_seconds: 1, launch_check: "on", setup_command: [make] }
         api: true
+        web: { setup_command: "sh script/test_setup.sh" }
     YAML
     expect(described_class.problems(path)).to contain_exactly(
       "`projects.~/code/emoji-tasks.manual_merge` must be true or false",
       "`projects.~/code/emoji-tasks.merge_method` must be one of merge, squash, rebase",
       "`projects.~/code/emoji-tasks.launch_check` must be true or false",
-      "`projects.~/code/emoji-tasks.poll_seconds`: only manual_merge, merge_method, sandbox, launch_check can be set per project",
+      "`projects.~/code/emoji-tasks.setup_command` must be a command, e.g. \"sh script/test_setup.sh\"",
+      "`projects.~/code/emoji-tasks.poll_seconds`: only manual_merge, merge_method, sandbox, launch_check, setup_command can be set per project",
       "`projects.api` must be a mapping of settings"
     )
+  end
+
+  it "gives a project's setup command only to that project" do
+    configured = config({ "~/code/emoji-tasks" => { "setup_command" => " sh script/test_setup.sh " } })
+    expect(configured.setup_command_for(local)).to eq("sh script/test_setup.sh")
+    expect(configured.setup_command_for(github)).to be_nil
+    expect { configured.for_project(local, "setup_command") }.to raise_error(ArgumentError)
   end
 end
