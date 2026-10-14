@@ -59,8 +59,11 @@ module Runeforge
         return sha unless plan && plan["last"]
 
         delete = env.repos.exists?(task[:repo], sha, plan["path"]) ? [plan["path"]] : []
-        committer.host_commit(parent: sha, branch: task[:branch], delete:,
-                              write: { done_path(sha, plan) => done_record(plan) },
+        write = { done_path(sha, plan) => done_record(plan) }
+        # Git drops a folder with no files, so moving out an inbox's last plan would remove the inbox.
+        keep = "#{Inbox::INBOX}/.gitkeep"
+        write[keep] = "" unless env.repos.exists?(task[:repo], sha, keep)
+        committer.host_commit(parent: sha, branch: task[:branch], delete:, write:,
                               message: Committer.message("runeforge: #{plan['name']} is done", bookkeeping_trailers))
       end
 

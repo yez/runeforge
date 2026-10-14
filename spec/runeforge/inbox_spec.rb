@@ -86,7 +86,8 @@ RSpec.describe Runeforge::Inbox do
       expect(tasks.map { |t| t[:workflow] }.uniq).to eq(["inbox"])
       expect(origin_file("lib/greeting.txt")).to eq("greeting\n")
       expect(origin_file("lib/farewell.txt")).to eq("farewell\n")
-      expect(origin_files("runeforge/inbox")).to eq(["runeforge/inbox/.gitkeep"]).or eq([])
+      # The plans were committed without a .gitkeep; the inbox stays once the last one moves out.
+      expect(origin_files("runeforge/inbox")).to eq(["runeforge/inbox/.gitkeep"])
       record = origin_file("runeforge/done/zz-first.md")
       expect(record).to start_with("# Add a greeting\n").and include("Built by Runeforge", "`#{tasks.first[:id]}`")
       # The second plan carries the first plan's locked test.
