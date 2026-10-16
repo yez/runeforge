@@ -10,7 +10,7 @@ module Runeforge
     # setup_command: the project's setup command, which Runeforge ran before the agent started;
     # setup_fixed: a person set it, so a plan can't replace it.
     def plan(task:, input:, test_globs:, test_command:, locked_paths: [], environment: nil, feedback: nil, apple: nil,
-             run_command: nil, pitfalls: [], setup_command: nil, setup_fixed: false)
+             run_command: nil, pitfalls: [], setup_command: nil, setup_fixed: false, ux_review: "auto")
       setup_command = setup_command.to_s.strip
       sections = ["You are the planning agent for task #{task[:id]}."]
       if environment
@@ -90,18 +90,147 @@ module Runeforge
           change your tests, so one assertion that contradicts a locked test fails the whole step.
         - Every assertion must be able to fail. Don't compare a value with itself or with an
           expression that always evaluates to it.
+        - If this step deliberately changes behaviour that a locked test from an earlier step asserts
+          (a field that is removed, a label or rule that changes), update that test in this plan, to
+          what the step now requires. You are the only one who can: the coder can't change locked tests,
+          and one that still asserts the old behaviour makes the step impossible or leaves a stale rule
+          behind.
         - Node: `node --test` with no arguments finds test/**/*.test.js (and .mjs, .cjs); or list the
           files, `node --test test/*.test.js`. Never `node --test <directory>`: Node 22 loads the
           directory as a module and runs nothing.
         - `.runeforge/` is Runeforge's scratch space and is never committed. Tests and code must
           not read or write anything there (spec.md and project.json are for Runeforge only).
 
+        #{ui_section(ux_review)}
         ## Rules
         - Do not implement the step itself (compile-only stubs are fine). Another agent will, and it cannot change your test files.
         - Do not change anything under `runeforge/` (the project's plan inbox); such changes are rejected.
         - Do not commit. Leave your changes in the working tree.
       JOB
       sections.join("\n\n")
+    end
+
+    # The planner's instructions for steps that change what people see or do: a UI brief for the
+    # UX reviewer, which opens those screens in a real browser before merging, and a browser test
+    # for each user-facing path. Specs that only check pieces passed while the feature they made
+    # up never reached the browser (a job's broadcast with no page subscribed to it).
+    def ui_section(mode)
+      return "" if mode == "never"
+
+      decide = if mode == "always"
+                 "The plan asks for a UX review of this step, so write `.runeforge/ui.md` even if the change looks small."
+               else
+                 "Decide whether this step changes what a person sees or does in the product (pages, forms, " \
+                   "components, copy, flows, emails people read). If it does, write `.runeforge/ui.md`; if it " \
+                   "doesn't (a model, a job, an API with no screen), don't write it."
+               end
+      <<~SECTION
+        ## User interface changes
+        #{decide} A UX reviewer opens the screens it names in a real browser, at desktop and phone
+        widths, before the step is merged, and sends what falls short back to the coder.
+        `.runeforge/ui.md` is the reviewer's brief, in markdown:
+        - **Screens**: each screen or component this step adds or changes, the URL or route, and how to
+          reach it (sign in as which kind of user, which records must exist, which clicks).
+        - **What it must look like and do**: in each state that applies (empty, filled, validation
+          error, loading, results arriving asynchronously, after a reload, at the limit), what the
+          person should see. Write the request's UI requirements here as checks.
+        - **Match**: the existing screens, partials and components it must look like (name the files),
+          so it reads as part of the same product: the same form controls, buttons, spacing and
+          progress elements, reused rather than restyled.
+        - **Widths**: desktop (1280px) and phone (390px), unless the request says otherwise.
+        For a step with UI changes, include a browser test (a system or end-to-end test in the project's
+        own framework) that walks each user-facing path the step adds, the way a person would: through
+        the page, waiting for asynchronous results to appear, not only checking the pieces separately.
+        A job that broadcasts a result is only done when the page shows it.
+      SECTION
+    end
+
+    # The UX reviewer's prompt (Roles::UxReviewer). browser: the project's browser services and the
+    # app container's name on their network; changed: the files this step changed.
+    def ux_review(task:, brief:, browser:, changed:, run_command: nil, setup_command: nil)
+      <<~PROMPT
+        You are the UX reviewer for task #{task[:id]}: #{task[:title]}.
+        The step's code is in this workspace. Its tests pass and its code has been reviewed; your job is
+        to use it the way a person would, in a real browser, and judge whether it's good enough to ship.
+        You don't change the product: anything you change outside `.runeforge/` is thrown away. Put
+        every file you make (scripts, screenshots, notes) under `.runeforge/`.
+
+        ## The UI brief (from the planner)
+        #{brief.strip}
+
+        ## The spec
+        #{task[:spec].to_s.strip.empty? ? task[:title] : task[:spec].to_s.strip}
+
+        ## Files this step changed
+        #{changed.map { |path| "- #{path}" }.join("\n")}
+
+        #{ux_browser_section(browser, run_command, setup_command)}
+
+        ## What to do
+        1. Start the app (or use the project's browser-test setup, which starts it for you) with the
+           data each screen needs: create the records and the signed-in user through the project's own
+           factories, seeds or models.
+        2. Open every screen in the brief at desktop (1280px wide) and phone (390px) widths, and go
+           through its states: empty, filled, validation errors, loading, results that arrive
+           asynchronously (wait for them; a result that never shows up in the page is a blocker), and
+           after a reload. Use the controls the way a person would: type, click, submit.
+        3. Screenshot each screen and state to `.runeforge/ux/<screen>-<state>-<width>.png`, then open
+           the screenshots with your Read tool and look at them. Judge what you see, not the markup.
+        4. Screenshot one or two existing screens the brief says to match, and compare.
+
+        ## What to judge
+        - Each check in the brief: does the screen do and show what it says?
+        - It works: nothing broken, stuck, empty where content belongs, or requiring a reload.
+        - It looks like part of this product: the same controls, buttons, spacing, type and progress
+          elements as the existing screens, not one-off styles.
+        - Layout at both widths: nothing overflowing, cut off or overlapping, sensible alignment, no
+          large dead space, tap targets big enough on the phone.
+        - Feedback: loading, success, empty and error states say what's happening; nothing is silent.
+        - Copy and accessibility: clear labels, no placeholder or debugging text, visible focus,
+          readable contrast.
+
+        Severity:
+        - blocker: doesn't work or can't be completed (an error, a result that never appears, a
+          checklist item that can never be met).
+        - major: works, but clearly below the existing screens or misses a check in the brief.
+        - minor: polish worth doing that shouldn't hold up the merge.
+        Blockers and majors send the step back to the coder; be specific enough that they can fix
+        each one without seeing your screenshots.
+
+        ## Your report
+        Write `.runeforge/ux_review.json`:
+        {"browser": "selenium" | "chrome" | "playwright" | "none",
+         "summary": "two or three sentences on the overall experience",
+         "issues": [{"severity": "blocker" | "major" | "minor", "screen": "which screen and state, at which width",
+                     "problem": "what a person sees and why it's a problem", "fix": "what to change, naming files where you can"}]}
+        An empty issues list means it's ready. Always write the report, even if you couldn't open a
+        browser: then set "browser" to "none", review the rendered HTML and templates instead, and say so
+        in the summary.
+      PROMPT
+    end
+
+    def ux_browser_section(browser, run_command, setup_command)
+      lines = ["## The browser"]
+      if browser[:services].any?
+        names = browser[:services].map { |service| "`#{service[:name]}` (#{service[:image]})" }.join(", ")
+        lines << "A browser service runs next to this container: #{names}. A Selenium server listens on port 4444 " \
+                 "of that host (`http://#{browser[:services].first[:name]}:4444`). It opens the app over the network, " \
+                 "so start the app bound to 0.0.0.0 and point the browser at " \
+                 "`http://#{browser[:app_host] || '$(hostname)'}:<port>`, not localhost."
+      elsif browser[:sandboxed]
+        lines << "No browser service runs next to this container. Look for a headless browser in the image " \
+                 "(`command -v chromium chromium-browser google-chrome`, or Playwright's) and use it if there is one."
+      else
+        lines << "You run on the developer's machine: use a headless browser installed here (Chrome, Chromium, " \
+                 "or Playwright's), and start the app on a free port on localhost."
+      end
+      lines << "Variables set for the browser: #{browser[:env].map { |name, value| "#{name}=#{value}" }.join(', ')}." if browser[:env].any?
+      lines << "The project's setup command (`#{setup_command}`) already ran in this workspace." unless setup_command.to_s.strip.empty?
+      lines << "The project runs with `#{run_command}`." unless run_command.to_s.strip.empty?
+      lines << "If the project has browser tests (Capybara system specs, Playwright), the simplest way in is a throwaway " \
+               "script or spec under `.runeforge/ux/` that reuses that setup: it already knows how to start the app and " \
+               "reach the browser. Resize the window for each width and save a screenshot of each state."
+      lines.join("\n")
     end
 
     # The "How it runs" section of the planner's prompt (see #plan).
@@ -140,7 +269,7 @@ module Runeforge
     # continuing: the coder carries on the conversation the planner (or its previous attempt) had,
     # so it already knows the project and the spec, and the prompt says what changed instead.
     def code(task:, attempt:, locked_paths:, test_command:, feedback: nil, run_command: nil, run_docs_required: false, apple: nil,
-             continuing: false, setup_command: nil)
+             continuing: false, setup_command: nil, ui_brief: nil)
       sections = [<<~PROMPT]
         #{continuing ? continuing_note(task, attempt) : coder_intro(task, attempt)}
 
@@ -162,6 +291,7 @@ module Runeforge
         #{working_section}
       PROMPT
       sections << "#{setup_section(setup_command)}\n" unless setup_command.to_s.strip.empty?
+      sections << "#{coder_ui_section(ui_brief)}\n" unless ui_brief.to_s.strip.empty?
       sections << "#{apple_section(apple)}\n" if apple
       sections << "## Feedback from the previous attempt\n#{feedback}\n" if feedback && !feedback.to_s.strip.empty?
       sections.join("\n")
@@ -199,6 +329,25 @@ module Runeforge
       "Run commands, the test suite included, in the foreground and wait for them to finish, even " \
         "if that takes minutes. Don't start background jobs or poll loops, and don't run two test runs at " \
         "once: they share one test database."
+    end
+
+    # For a step that changes the UI: what the UX reviewer will check in a browser, and the bar.
+    def coder_ui_section(brief)
+      <<~SECTION.chomp
+        ## User interface
+        This step changes the UI. Before it's merged, a UX reviewer opens these screens in a real browser at
+        desktop and phone widths and sends back what falls short. Its brief:
+
+        #{brief.strip}
+
+        Build it to that bar, not just to pass the tests:
+        - Reuse the app's existing partials, components, form controls, buttons and progress elements; find
+          them before writing markup, and don't copy long class lists from screen to screen.
+        - Make every state work in the browser: empty, filled, errors, loading, and asynchronous results
+          that must reach the page (a broadcast needs a page subscribed to it). New items get the same
+          controls as saved ones without a reload.
+        - Check the layout at both widths, including what the page looks like with little content.
+      SECTION
     end
 
     def setup_section(setup_command)

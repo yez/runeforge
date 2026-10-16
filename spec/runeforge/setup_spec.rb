@@ -54,7 +54,7 @@ RSpec.describe Runeforge::Setup do
                                        "container runtime" => :warning, "agent image" => :skipped,
                                        "daemons" => :ok, "health" => :ok)
     expect(YAML.safe_load_file(config_path)).to include("sandbox" => { "mode" => "none" }, "workers" => ["planner,coder", "tester,reviewer,integrator"])
-    expect(first.env.db[:runeforge_workers].select_map(:roles)).to contain_exactly("planner,coder", "tester,reviewer,integrator")
+    expect(first.env.db[:runeforge_workers].select_map(:roles)).to contain_exactly("planner,coder", "tester,reviewer,integrator,ux_reviewer")
     expect(Runeforge::Daemons.new(first.env, config_path:).status.map(&:state)).to all(eq("running"))
     expect(out.string).to include("✓ health", "Runeforge is running")
 

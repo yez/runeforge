@@ -477,7 +477,7 @@ module Runeforge
     end
 
     desc "worker", "Run a worker for one or more roles"
-    option :role, required: true, desc: "Comma-separated: planner,coder,tester,reviewer,integrator"
+    option :role, required: true, desc: "Comma-separated: planner,coder,tester,reviewer,ux_reviewer,integrator (reviewer brings ux_reviewer)"
     option :once, type: :boolean, desc: "Handle at most one message, then exit"
     option :dry_run, type: :boolean, desc: "Go through the motions without calling an LLM, git or the network"
     def worker
@@ -486,7 +486,7 @@ module Runeforge
         if options[:dry_run]
           worker_env = Environment.new(Config.new(Config.deep_merge(env.config.to_h, "dry_run" => { "enabled" => true })), db: env.db)
         end
-        worker_env.check_agent_credentials! if (options[:role].split(",").map(&:strip) & %w[planner coder]).any?
+        worker_env.check_agent_credentials! if (options[:role].split(",").map(&:strip) & %w[planner coder reviewer ux_reviewer]).any?
         runner = Worker.new(worker_env, roles: options[:role].split(",").map(&:strip))
         options[:once] ? runner.work_once : run_until_signal(runner)
       end

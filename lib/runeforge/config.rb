@@ -223,6 +223,11 @@ module Runeforge
       "launch_check" => true,
       # Plans committed to a project's runeforge/inbox/ are queued and built in order (see
       # Runeforge::Inbox). The supervisor checks each registered repository this often.
+      # A step whose plan changes the UI is opened in a real browser by the UX reviewer before it's
+      # merged (Roles::UxReviewer); a plan's `ux_review:` front matter can also ask for or skip it.
+      "ux_review" => {
+        "enabled" => true
+      },
       "inbox" => {
         "enabled" => true,
         "poll_seconds" => 60

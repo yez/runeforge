@@ -38,8 +38,17 @@ module Runeforge
       replaces: csv-export-v1  # unlock that plan's acceptance tests, to change or reverse it
       max_attempts: 3
       steps: each              # one task per item (default auto; or a number: at most N tasks)
+      ux_review: auto          # review UI changes in a browser: auto (when a step changes the UI), always, never
       ---
       ```
+
+      ### UI changes
+
+      When a step changes what people see or do, say so under a `UI:` heading or list in that step:
+      the screens and how to reach them, what each should look like and do (empty, filled, loading,
+      error, results arriving), the widths that matter (desktop and phone), and the existing screens
+      or components it should match. The planner turns this into a UI brief, and a UX reviewer opens
+      those screens in a real browser before the step is merged; what it rejects goes back to the coder.
 
       - Edit a queued plan and it keeps its place; edit a running one and it restarts.
       - Edit a failed plan to try again (it goes to the back of the queue).
@@ -355,7 +364,7 @@ module Runeforge
         input: {
           "title" => multi ? step.title : parsed.title, "description" => step.body,
           "context" => (multi ? parsed.text : nil), "step" => (multi ? "#{plan[:step] + 1} of #{parsed.steps.size}" : nil),
-          "queued" => queued_titles(name, plan),
+          "queued" => queued_titles(name, plan), "ux_review" => parsed.meta["ux_review"],
           "plan" => { "id" => plan[:id], "path" => plan[:path], "name" => plan[:name],
                       "last" => plan[:step] + 1 == parsed.steps.size }
         }.compact,

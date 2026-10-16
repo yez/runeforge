@@ -56,7 +56,9 @@ module Runeforge
       raise Error, "the plan's front matter is not valid YAML: #{e.message}"
     end
 
-    KEYS = %w[title after replaces max_attempts steps].freeze
+    KEYS = %w[title after replaces max_attempts steps ux_review].freeze
+    # ux_review: auto (the planner decides whether a step changes the UI), always or never.
+    UX_REVIEW = %w[auto always never].freeze
     # Names people reach for that no spell checker would map to the real key.
     SYNONYMS = { "retries" => "max_attempts", "retry" => "max_attempts", "attempts" => "max_attempts",
                  "depends_on" => "after", "depends" => "after", "needs" => "after", "supersedes" => "replaces" }.freeze
@@ -68,7 +70,8 @@ module Runeforge
         "after" => names.call(data["after"]),
         "replaces" => names.call(data["replaces"]),
         "max_attempts" => data["max_attempts"],
-        "steps" => data["steps"].is_a?(String) ? data["steps"].strip.downcase : data["steps"]
+        "steps" => data["steps"].is_a?(String) ? data["steps"].strip.downcase : data["steps"],
+        "ux_review" => ux_review(data["ux_review"])
       }
       bad = (meta["after"] + meta["replaces"]).grep_v(NAME)
       raise Error, "not a plan name in the front matter: #{bad.join(', ')}" if bad.any?
@@ -79,7 +82,21 @@ module Runeforge
         raise Error, "steps in the front matter must be auto, each, or a positive whole number"
       end
 
+      unless meta["ux_review"].nil? || UX_REVIEW.include?(meta["ux_review"])
+        raise Error, "ux_review in the front matter must be auto, always or never"
+      end
+
       meta.reject { |_key, value| value.nil? || value == "" }.merge("warnings" => unknown_keys(data.keys)).reject { |_k, v| v == [] }
+    end
+
+    # YAML reads `ux_review: yes` as true; true and false mean always and never.
+    def self.ux_review(value)
+      case value
+      when true then "always"
+      when false then "never"
+      when nil then nil
+      else value.to_s.strip.downcase
+      end
     end
 
     # A misspelled key would otherwise be dropped without a word (`retries: 3` sets nothing).

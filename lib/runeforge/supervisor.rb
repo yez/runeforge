@@ -11,6 +11,7 @@ module Runeforge
       "code.request" => "coding",
       "test.request" => "testing",
       "review.request" => "reviewing",
+      "ux.request" => "reviewing_ux",
       "deps.check" => "checking_dependencies",
       "integrate.request" => "integrating"
     }.freeze
@@ -162,7 +163,7 @@ module Runeforge
       # Adds the planner's tests to the locked set (earlier steps' tests stay locked).
       def lock_paths!(result)
         locked = JSON.parse(task[:locked_paths] || "{}").merge(result.payload.fetch("locked_paths", {}))
-        update_task(spec: result.payload["spec"].to_s, locked_paths: JSON.generate(locked))
+        update_task(spec: result.payload["spec"].to_s, locked_paths: JSON.generate(locked), ui_brief: result.payload["ui"])
       end
 
       # Takes the test and setup commands from the plan when the repo doesn't have them yet.
@@ -192,6 +193,9 @@ module Runeforge
         end
         @env.repos.update(task[:repo], updates) if updates.any?
       end
+
+      # Whether the approved work goes to the UX reviewer first: its plan described UI changes.
+      def ux_review? = !task[:ui_brief].to_s.strip.empty? && @env.config.dig("ux_review", "enabled") != false
 
       # Foreground runs have a person at the terminal who can answer dependency prompts.
       def interactive? = !task[:lane].nil? || @operator

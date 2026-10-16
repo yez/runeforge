@@ -206,7 +206,7 @@
 <script>
 (() => {
   const ROLES = ["planner", "coder", "tester", "reviewer", "integrator"];
-  const STAGES = { pending: 0, planning: 0, checking_dependencies: 1, coding: 1, testing: 2, reviewing: 3, integrating: 4, done: 5 };
+  const STAGES = { pending: 0, planning: 0, checking_dependencies: 1, coding: 1, testing: 2, reviewing: 3, reviewing_ux: 3, integrating: 4, done: 5 };
   const TERMINAL = new Set(["done", "failed", "cancelled"]);
   const HOT_AFTER = 10; // seconds until a job reads white-hot
   const OUTPUT_LINES = 6;

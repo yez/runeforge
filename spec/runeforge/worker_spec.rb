@@ -92,7 +92,7 @@ RSpec.describe Runeforge::Worker do
       seen = nil
       worker.run(stop: -> { seen = db[:runeforge_workers].select_map(:roles); true })
 
-      expect(seen).to eq(["tester,reviewer"])
+      expect(seen).to eq(["tester,reviewer,ux_reviewer"])
       expect(db[:runeforge_workers].count).to eq(0)
     end
 

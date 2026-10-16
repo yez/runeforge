@@ -31,7 +31,8 @@ module Runeforge
                               environment: verdict.environment.description, feedback: msg.payload["feedback"],
                               apple: apple_toolchain(verdict.platform), run_command: repo[:run_command],
                               pitfalls:, setup_command: repo[:setup_command],
-                              setup_fixed: !RepoStore.planned(repo).include?("setup_command"))
+                              setup_fixed: !RepoStore.planned(repo).include?("setup_command"),
+                              ux_review: ux_review_mode(input))
         # Every plan, a re-plan included, starts a conversation for the coder to continue.
         conversation = conversations? ? env.conversations.start(task_id: task[:id], repo: task[:repo], adapter: agent.adapter.name) : nil
         run = run_agent(workspace, prompt, conversation:, setup: repo[:setup_command])
@@ -86,10 +87,35 @@ module Runeforge
 
         spec = workspace.read_meta_text("spec.md", max_bytes: limits["max_spec_bytes"]).to_s
         result("plan.done", { "spec" => spec, "locked_paths" => locked, "project" => project, "log_path" => run.log_path,
+                              "ui" => ui_brief(workspace, input),
                               "skipped" => skipped(workspace).then { |list| list.empty? ? nil : list } }.compact,
                commit_sha: commit.sha, task_updates: updates)
       rescue Committer::PatchRejected, Workspace::UnsafeFile => e
         failed(e.message, run, updates || {}, retryable: true)
+      end
+
+      # The UX review for this step: the plan's `ux_review:` (auto, always, never), unless
+      # `ux_review.enabled: false` in runeforge.yml turns it off everywhere.
+      def ux_review_mode(input)
+        return "never" if env.config.dig("ux_review", "enabled") == false
+
+        PlanFile::UX_REVIEW.include?(input["ux_review"]) ? input["ux_review"] : "auto"
+      end
+
+      UI_BRIEF_BYTES = 16_384
+
+      # .runeforge/ui.md: what the step changes in the UI, for the UX reviewer (Roles::UxReviewer).
+      # Nil when the step has no UI changes; `ux_review: always` gets a review regardless.
+      def ui_brief(workspace, input)
+        mode = ux_review_mode(input)
+        return nil if mode == "never"
+
+        brief = workspace.read_meta_text("ui.md", max_bytes: UI_BRIEF_BYTES).to_s.strip
+        return brief unless brief.empty?
+
+        mode == "always" ? "The plan asks for a UX review of this step: #{input['title']}. Review the screens it changed." : nil
+      rescue Workspace::UnsafeFile
+        mode == "always" ? "Review the screens this step changed: #{input['title']}." : nil
       end
 
       # .runeforge/project.json: {"test_command": "...", "setup_command": "...", "run_command": "...",

@@ -263,9 +263,9 @@ the next run; background workers wait a minute and try again.
 
 ## Roles
 
-Every step moves through these roles. The supervisor routes messages between them; only the
-planner and coder run an agent. The checks and the hand-off are deterministic, so an agent
-never judges its own work and never runs next to your credentials.
+Every step moves through these roles. The supervisor routes messages between them; the planner,
+the coder and, for UI changes, the UX reviewer run an agent. The other checks and the hand-off are
+deterministic, so an agent never judges its own work and never runs next to your credentials.
 
 | Role | Agent? | Responsibilities | Runs where | Can change code? |
 |---|---|---|---|---|
@@ -275,10 +275,18 @@ never judges its own work and never runs next to your credentials.
 | **Coder** | Yes | Changes the code until the locked tests and the rest of the suite pass, using feedback from failed attempts. A patch that touches a locked test file is rejected | Sandbox | Yes, except locked tests |
 | **Tester** | No | Runs the setup and test commands against the coder's commit in a fresh sandbox; the exit code is the verdict. Never writes files | Sandbox | No |
 | **Reviewer** | No | Confirms every locked test file is byte-for-byte what the planner committed (by git object id) and that the change stays within size limits | Host | No |
+| **UX reviewer** | Yes | Only for steps whose plan changes the UI. Starts the app in the sandbox, opens the screens the planner's UI brief (`.runeforge/ui.md`) names in a real browser (the project's Selenium service, else a headless browser in the image) at desktop and phone widths, screenshots each state and judges them against the brief and the app's existing screens. Blocker and major issues go back to the coder; minor ones become notes. Screenshots are kept under `logs/<task>/<message>-ux/`. If it can't run, the step is merged with a note saying so | Sandbox | No (its changes are discarded) |
 | **Integrator** | No | Pushes the branch, opens or reuses the pull request on GitHub, comments on the JIRA ticket, and merges (unless `manual_merge`), using credentials that only exist on the host | Host | No |
 
 A failed test run or rejected check goes back to the coder with the failure output, until the
 task runs out of attempts or budget.
+
+**UI changes:** the planner decides whether a step changes what people see or do. If it does, it
+writes a UI brief (the screens and how to reach them, the states to check, the existing screens to
+match, the widths) and a browser test for each user-facing path; the coder sees the brief too. A
+plan's `ux_review:` front matter (`auto`, `always`, `never`) overrides that, and
+`ux_review.enabled: false` in `runeforge.yml` turns the review off. Workers that run the reviewer
+also run the UX reviewer.
 
 **Test and setup commands:** the setup command runs before the tests in the same shell, so its
 exports apply, and a setup command that fails is reported as that, not as failing tests. The

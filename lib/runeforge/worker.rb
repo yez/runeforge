@@ -13,6 +13,9 @@ module Runeforge
     def initialize(env, roles:, id: nil, lane: nil, repo: nil)
       @env = env
       @roles = Array(roles).map(&:to_s)
+      # The UX reviewer comes with the reviewer, so worker lists written before it existed
+      # (`tester,reviewer,integrator`) still pick up its jobs.
+      @roles |= ["ux_reviewer"] if @roles.include?("reviewer")
       unknown = @roles - Roles.names
       raise Error, "unknown roles: #{unknown.join(', ')} (known: #{Roles.names.join(', ')})" if unknown.any?
 

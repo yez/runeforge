@@ -27,7 +27,7 @@ RSpec.describe Runeforge::Daemons do
     expect(daemons.up.map(&:state)).to all(eq("already running"))
 
     wait_until { db[:runeforge_workers].count == 1 }
-    expect(db[:runeforge_workers].select_map(:roles)).to eq(["tester,reviewer"])
+    expect(db[:runeforge_workers].select_map(:roles)).to eq(["tester,reviewer,ux_reviewer"])
     expect(daemons.status.map(&:state)).to all(eq("running"))
 
     stopped = daemons.down

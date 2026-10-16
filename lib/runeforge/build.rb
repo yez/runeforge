@@ -388,7 +388,7 @@ module Runeforge
           input: { "title" => step.title, "description" => step.body,
                    "context" => (multi ? @input.text : nil), "step" => "#{index + 1} of #{@input.steps.size}",
                    "step_key" => step.key, "plan" => @plan_source,
-                   "platform_confirmed" => @platform_confirmed }.compact,
+                   "platform_confirmed" => @platform_confirmed, "ux_review" => @input.meta["ux_review"] }.compact,
           max_attempts: budgets["max_attempts"], token_budget: budgets["token_budget"],
           deadline_at: budgets["max_task_minutes"] && (Runeforge.now + (budgets["max_task_minutes"] * 60))
         )

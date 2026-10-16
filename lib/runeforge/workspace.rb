@@ -52,6 +52,15 @@ module Runeforge
       read_meta(name, max_bytes:)&.force_encoding(Encoding::UTF_8)&.scrub
     end
 
+    # Regular files in a folder under .runeforge/ (screenshots), as names. The folder and its files
+    # are agent-written: a symlinked folder lists nothing, and symlinks and subfolders are skipped.
+    def meta_files(dir)
+      folder = File.join(meta_dir, dir)
+      return [] if File.symlink?(meta_dir) || File.symlink?(folder) || !File.directory?(folder)
+
+      Dir.children(folder).sort.select { |name| File.file?(File.join(folder, name)) && !File.symlink?(File.join(folder, name)) }
+    end
+
     def cleanup!
       FileUtils.rm_rf(path)
     end

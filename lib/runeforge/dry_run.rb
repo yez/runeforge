@@ -194,6 +194,13 @@ module Runeforge
       end
     end
 
+    class UxReviewer < Role
+      def call
+        work(["Starting the app and the browser", "Opening the changed screens at 1280px and 390px", "Approved"])
+        result("ux.verdict", { "approved" => true, "reasons" => [], "notes" => [], "browser" => "dry run" }, commit_sha: msg.commit_sha)
+      end
+    end
+
     class Operator < Role
       def call
         work(["Checking the sandbox for #{Array(msg.payload['tools']).join(', ')}", "All tools available"])
@@ -203,7 +210,7 @@ module Runeforge
 
     ROLES = {
       "planner" => Planner, "coder" => Coder, "tester" => Tester, "reviewer" => Reviewer,
-      "integrator" => Integrator, "operator" => Operator
+      "ux_reviewer" => UxReviewer, "integrator" => Integrator, "operator" => Operator
     }.freeze
   end
 end

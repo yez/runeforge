@@ -19,7 +19,7 @@ module Runeforge
         prompt = Prompts.code(task:, attempt:, locked_paths: locked_paths.keys, test_command: repo[:test_command],
                               run_command: repo[:run_command], run_docs_required: repo[:run_docs_required] == true,
                               feedback: msg.payload["feedback"], apple: apple_toolchain, continuing: continuing?(conversation),
-                              setup_command: repo[:setup_command])
+                              setup_command: repo[:setup_command], ui_brief: task[:ui_brief])
         run = run_agent(workspace, prompt, conversation:, setup: repo[:setup_command])
         updates = usage_updates(run.usage)
         failure = agent_failure(run)

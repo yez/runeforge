@@ -63,6 +63,9 @@ projects: {}
 #   ~/code/shop:                       # prepares each checkout before the planner, the coder and
 #     setup_command: sh script/test_setup.sh   # every test run; plans can't replace it
 
+ux_review:
+  enabled: true                        # open a step's UI changes in a real browser before merging it
+
 inbox:
   enabled: true                        # build plans committed to each project's runeforge/inbox/
   poll_seconds: 60

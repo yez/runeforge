@@ -192,7 +192,7 @@
   const FRAME_TIME = 1 / 10;     // animation frames per second
   const MIN_WORK = 1.2;          // seconds an orc works even if the job finished first
   const ROLES = ["planner", "coder", "tester", "reviewer", "integrator", "operator"];
-  const STAGES = { pending: 0, planning: 0, checking_dependencies: 1, coding: 1, testing: 2, reviewing: 3, integrating: 4, done: 5 };
+  const STAGES = { pending: 0, planning: 0, checking_dependencies: 1, coding: 1, testing: 2, reviewing: 3, reviewing_ux: 3, integrating: 4, done: 5 };
   const TERMINAL = new Set(["done", "failed", "cancelled"]);
 
   // Each role: its building, the orc it sends, where the orc works and what it carries back.

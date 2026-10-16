@@ -2,8 +2,8 @@
 
 module Runeforge
   module Workflows
-    # Spec + acceptance tests -> code -> tests -> locked-test check -> push the branch (and a PR
-    # for GitHub remotes). Foreground runs (tasks with a lane) also stop to ask the person at the
+    # Spec + acceptance tests -> code -> tests -> locked-test check -> UX review in a browser (when
+    # the plan changes the UI) -> push the branch (and a PR for GitHub remotes). Foreground runs (tasks with a lane) also stop to ask the person at the
     # terminal for tools the sandbox is missing.
     TICKET_TO_PR = proc do
       on "task.created" do |task, msg|
@@ -72,6 +72,17 @@ module Runeforge
       end
 
       on "review.verdict" do |_task, msg|
+        if !msg.payload["approved"]
+          retry_or_fail(msg.payload)
+        elsif ux_review?
+          send_to :ux_reviewer, "ux.request", sha: msg.commit_sha
+        else
+          send_to :integrator, "integrate.request", sha: msg.commit_sha
+        end
+      end
+
+      # The plan changed the UI: a reviewer opened those screens in a browser (Roles::UxReviewer).
+      on "ux.verdict" do |_task, msg|
         if msg.payload["approved"]
           send_to :integrator, "integrate.request", sha: msg.commit_sha
         else

@@ -283,6 +283,74 @@ RSpec.describe "Ticket to pull request" do
       expect(File.read(probe.first)).to start_with("$ echo prepared > prepared.txt && sh test/run.sh\n# exit 1 after ")
     end
 
+    describe "a step that changes the UI" do
+      def ui_env(review:, plan_ui: true)
+        agent = File.join(tmpdir, "ui_agent.sh")
+        File.write(agent, <<~SH)
+          case "$RUNEFORGE_PROMPT" in
+            *"planning agent"*)
+          #{Helpers::PLAN_GREETING}
+          #{plan_ui ? "printf -- '- Screens: /greeting\\n' > .runeforge/ui.md" : ''}
+              ;;
+            *"You are the UX reviewer"*)
+          printf '%s' "$RUNEFORGE_PROMPT" > #{tmpdir}/ux-prompt
+          #{review}
+              ;;
+            *)
+          #{Helpers::CODE_GREETING}
+          echo "attempt $$" >> lib/attempts.txt
+          printf '%s' "$RUNEFORGE_PROMPT" >> #{tmpdir}/coder-prompts
+              ;;
+          esac
+          echo '{"input_tokens":100,"output_tokens":20,"cost_usd":0.01}'
+        SH
+        build_env("agent" => { "command" => "sh #{agent}" }).tap { |env| add_repo(env, url: origin) }
+      end
+
+      it "has the UX reviewer open it before merging, and sends what it rejects back to the coder" do
+        review = <<~SH
+          mkdir -p .runeforge/ux && printf 'png' > .runeforge/ux/greeting-desktop.png
+          if [ -f #{tmpdir}/reviewed-once ]; then
+            printf '{"browser": "selenium", "issues": [{"severity": "minor", "screen": "Greeting", "problem": "Tight spacing"}]}' > .runeforge/ux_review.json
+          else
+            touch #{tmpdir}/reviewed-once
+            printf '{"browser": "selenium", "issues": [{"severity": "major", "screen": "Greeting, 390px", "problem": "The text overflows", "fix": "Wrap it"}]}' > .runeforge/ux_review.json
+          fi
+        SH
+        env = ui_env(review:)
+        create(env)
+        task = drive(env, "T-1", until_status: "done")
+
+        expect(task[:ui_brief]).to eq("- Screens: /greeting")
+        expect(File.read(File.join(tmpdir, "ux-prompt"))).to include("UX reviewer for task T-1", "- Screens: /greeting")
+        verdicts = env.tasks.messages("T-1").select { |m| m.type == "ux.verdict" }
+        expect(verdicts.map { |m| m.payload["approved"] }).to eq([false, true])
+        expect(verdicts.last.payload["notes"]).to eq(["[minor] Greeting: Tight spacing"])
+        expect(verdicts.first.payload["screenshots"].first).to end_with("-ux/greeting-desktop.png")
+        coder = File.read(File.join(tmpdir, "coder-prompts"))
+        expect(coder).to include("## User interface", "- Screens: /greeting",
+                                 "[major] Greeting, 390px: The text overflows Fix: Wrap it")
+        expect(task[:attempts]).to eq(2)
+        expect(git("show", "main:lib/greeting.txt")).to eq("Hello, Runeforge\n")
+      end
+
+      it "merges without a UX review when the plan has no UI changes" do
+        env = ui_env(review: "exit 1", plan_ui: false)
+        create(env)
+        drive(env, "T-1", until_status: "done")
+        expect(env.tasks.messages("T-1").map(&:type)).not_to include("ux.request")
+      end
+
+      it "doesn't hold up the merge when the review couldn't run, but says so" do
+        env = ui_env(review: "true")
+        create(env)
+        drive(env, "T-1", until_status: "done")
+        verdict = env.tasks.messages("T-1").find { |m| m.type == "ux.verdict" }
+        expect(verdict.payload).to include("approved" => true,
+                                           "notes" => ["UX review skipped: the UX reviewer wrote no .runeforge/ux_review.json"])
+      end
+    end
+
     it "tells the coder when the setup command failed before it started" do
       code = <<~SH
         #{Helpers::CODE_GREETING}

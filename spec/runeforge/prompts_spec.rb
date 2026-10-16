@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+RSpec::Matchers.define_negated_matcher :not_include, :include
+
 RSpec.describe Runeforge::Prompts do
   let(:task) { { id: "T-1", title: "Greet", spec: "Say hello.", max_attempts: 5 } }
 
@@ -25,7 +27,38 @@ RSpec.describe Runeforge::Prompts do
     expect(described_class.plan(task:, input: {}, test_globs: [], test_command: "")).not_to include("Known pitfalls")
   end
 
-  it "tells the planner how to run Node tests, and why its previous plan was rejected" do
+  it "asks the planner for a UI brief and a browser test when the step changes the UI, unless the plan says never" do
+    prompt = described_class.plan(task:, input: { "title" => "Greet" }, test_globs: [], test_command: "")
+    expect(prompt).to include("## User interface changes", "Decide whether this step changes what a person sees",
+                              "`.runeforge/ui.md`", "**Screens**", "**Match**", "desktop (1280px) and phone (390px)",
+                              "A job that broadcasts a result is only done when the page shows it")
+    expect(prompt).to include("update that test in this plan")
+    always = described_class.plan(task:, input: {}, test_globs: [], test_command: "", ux_review: "always")
+    expect(always).to include("The plan asks for a UX review of this step").and not_include("Decide whether")
+    expect(described_class.plan(task:, input: {}, test_globs: [], test_command: "", ux_review: "never"))
+      .not_to include("User interface changes", "ui.md")
+  end
+
+  it "gives the coder the UI brief and the bar the UX reviewer holds it to" do
+    coder = ->(**opts) { described_class.code(task:, attempt: 1, locked_paths: [], test_command: "sh t.sh", **opts) }
+    expect(coder.call(ui_brief: "- Screens: /builder/contact")).to include("## User interface", "- Screens: /builder/contact",
+                                                                            "Reuse the app's existing partials")
+    expect(coder.call).not_to include("## User interface")
+  end
+
+  it "tells the UX reviewer where the browser is and how to report" do
+    browser = { services: [{ name: "selenium", image: "seleniarm/standalone-chromium" }], app_host: "rails-app",
+                env: { "SELENIUM_HOST" => "selenium" }, sandboxed: true }
+    prompt = described_class.ux_review(task: task.merge(title: "Contact screen"), brief: "- Screens: /contact", browser:,
+                                       changed: ["app/views/contact.html.erb"], setup_command: "sh script/test_setup.sh")
+    expect(prompt).to include("UX reviewer for task", "- Screens: /contact", "- app/views/contact.html.erb",
+                              "`http://selenium:4444`", "`http://rails-app:<port>`", "SELENIUM_HOST=selenium",
+                              "`sh script/test_setup.sh`", "1280px", "390px", "`.runeforge/ux_review.json`")
+    none = described_class.ux_review(task:, brief: "x", browser: browser.merge(services: [], env: {}), changed: [])
+    expect(none).to include("No browser service runs next to this container").and not_include("4444")
+  end
+
+    it "tells the planner how to run Node tests, and why its previous plan was rejected" do
     prompt = Runeforge::Prompts.plan(task: { id: "T-1" }, input: { "title" => "Snake" }, test_globs: ["test/**/*"], test_command: nil,
                                      feedback: "the test command `node --test test/` didn't run the acceptance tests")
     expect(prompt).to include("Never `node --test <directory>`", "a runner crash reported as a single failing test",

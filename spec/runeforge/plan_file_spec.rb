@@ -35,12 +35,20 @@ RSpec.describe Runeforge::PlanFile do
     expect { described_class.parse("---\nmax_attempts: -1\n---\n# x\n") }.to raise_error(Runeforge::Error, /positive whole number/)
   end
 
-  it "warns about front matter keys it doesn't know, suggesting the one meant" do
+  it "reads ux_review as auto, always or never, with yes and no meaning always and never" do
+    expect(described_class.parse("---\nux_review: Always\n---\n# x\n").meta["ux_review"]).to eq("always")
+    expect(described_class.parse("---\nux_review: no\n---\n# x\n").meta["ux_review"]).to eq("never")
+    expect(described_class.parse("# x\n").meta).not_to have_key("ux_review")
+    expect { described_class.parse("---\nux_review: sometimes\n---\n# x\n") }
+      .to raise_error(Runeforge::Error, /ux_review in the front matter must be auto, always or never/)
+  end
+
+    it "warns about front matter keys it doesn't know, suggesting the one meant" do
     plan = described_class.parse("---\nretries: 3\ntitel: CSV\ncolour: red\n---\n# Export\n")
     expect(plan.warnings).to eq([
                                   "unknown front matter key `retries` (ignored); did you mean `max_attempts`?",
                                   "unknown front matter key `titel` (ignored); did you mean `title`?",
-                                  "unknown front matter key `colour` (ignored); known keys: title, after, replaces, max_attempts, steps"
+                                  "unknown front matter key `colour` (ignored); known keys: title, after, replaces, max_attempts, steps, ux_review"
                                 ])
     expect(plan.meta).not_to include("max_attempts")
     expect(described_class.parse("---\ntitle: CSV\n---\n# Export\n").warnings).to eq([])
