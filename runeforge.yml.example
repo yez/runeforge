@@ -66,6 +66,7 @@ projects: {}
 
 ux_review:
   enabled: true                        # open a step's UI changes in a real browser before merging it
+  max_rounds: 2                        # rejected reviews before a step merges anyway, with the rest as notes
 
 inbox:
   enabled: true                        # build plans committed to each project's runeforge/inbox/
@@ -77,7 +78,26 @@ memory:                                # lessons from steps that went wrong, sho
   # embedding_model: text-embedding-3-small   # match lessons by meaning (needs an embedding provider's key;
   # embedding_provider: openai               # a Claude subscription can't make embeddings)
   # embedding_key_env: OPENAI_API_KEY
+  # or a local model, made on this machine and never reachable from the sandbox:
+  # embedding_provider: ollama               # after `ollama pull nomic-embed-text`
+  # embedding_model: nomic-embed-text
+  # embedding_url: http://127.0.0.1:11434
   min_similarity: 0.5
+  lesson_bar: 3.0                      # how closely another plan's lessons must match to be shown
+
+ledger:                                # what each step hands the next (see README, Ledger)
+  enabled: true
+  max_discovered: 3                    # work found outside a step, queued as plans; at most this many per plan
+  brief_chars: 10000                   # the brief in the planner's prompt (about 2,500 tokens)
+  max_facts: 200
+  compact_after_plans: 3
+
+index:                                 # the code index behind the brief's code map
+  enabled: true
+  max_file_kb: 200                     # larger files aren't indexed
+  map_lines: 20
+  inline_chunks: 3                     # chunks of code shown in full in the brief
+  meaning_weight: 1.0                  # how much embeddings count next to exact anchors and words
 
 dry_run:
   enabled: false                       # true: agents sleep through canned steps instead of calling a model

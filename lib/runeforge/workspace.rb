@@ -22,7 +22,7 @@ module Runeforge
     def meta_dir = File.join(path, META_DIR)
 
     def write_meta(name, content)
-      FileUtils.mkdir_p(meta_dir)
+      FileUtils.mkdir_p(File.dirname(File.join(meta_dir, name)))
       File.write(File.join(meta_dir, name), content)
     end
 

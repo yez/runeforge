@@ -230,6 +230,19 @@ module Runeforge
 
       def locked_paths = JSON.parse(task[:locked_paths] || "{}")
 
+      # ->(path) { the file's text at the commit, or nil }, for checking an agent's handoff.
+      def file_at(sha)
+        cache = {}
+        lambda do |path|
+          path = path.to_s.strip.delete_prefix("./")
+          next nil if path.empty? || path.start_with?("/") || path.split("/").include?("..")
+
+          cache.fetch(path) { cache[path] = (oid = env.repos.oid(task[:repo], sha, path)) && env.repos.blob(task[:repo], oid) }
+        rescue Git::CommandFailed
+          nil
+        end
+      end
+
       def tail(text, bytes)
         text = text.to_s
         text.bytesize > bytes ? text.byteslice(-bytes, bytes).scrub : text

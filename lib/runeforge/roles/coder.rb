@@ -16,10 +16,12 @@ module Runeforge
       def code(workspace, sha)
         # The coder continues the conversation of the plan it's building (see Conversations).
         conversation = conversations? ? env.conversations.latest(task[:id]) : nil
+        continuing = continuing?(conversation)
         prompt = Prompts.code(task:, attempt:, locked_paths: locked_paths.keys, test_command: repo[:test_command],
                               run_command: repo[:run_command], run_docs_required: repo[:run_docs_required] == true,
-                              feedback: msg.payload["feedback"], apple: apple_toolchain, continuing: continuing?(conversation),
-                              setup_command: repo[:setup_command], ui_brief: task[:ui_brief])
+                              feedback: msg.payload["feedback"], apple: apple_toolchain, continuing:,
+                              setup_command: repo[:setup_command], ui_brief: task[:ui_brief],
+                              brief: brief_for(workspace, continuing))
         run = run_agent(workspace, prompt, conversation:, setup: repo[:setup_command])
         updates = usage_updates(run.usage)
         failure = agent_failure(run)
@@ -33,11 +35,24 @@ module Runeforge
           patch:, parent: sha, branch: task[:branch], locked: locked_paths.keys,
           message: Committer.message("runeforge: attempt #{attempt} for #{task[:id]}", trailers("Agent-Attempt" => attempt))
         )
+        checked = Handoff.check(Handoff.read(workspace), role: :coder, file: file_at(commit.sha))
         result("code.done", { "attempt" => attempt, "changed_paths" => commit.changed_paths, "log_path" => run.log_path,
-                              "skipped" => skipped(workspace).then { |list| list.empty? ? nil : list } }.compact,
+                              "skipped" => skipped(workspace).then { |list| list.empty? ? nil : list },
+                              "handoff" => checked&.data }.compact,
                commit_sha: commit.sha, task_updates: updates.merge(head_sha: commit.sha))
       rescue Committer::PatchRejected, Workspace::UnsafeFile => e
         failed(only_meta_changes(workspace, e.message), run, updates || {})
+      end
+
+      # What earlier steps left for the coder (see Brief#coder); nil without a ledger.
+      def brief_for(workspace, continuing)
+        return nil unless env.ledger.enabled?
+
+        input = Message.parse_payload(env.db[:runeforge_messages].where(task_id: task[:id], type: "task.created").get(:payload) || "{}")
+        Brief.new(env, task:, repo:, input:, workspace:).coder(continuing:)
+      rescue StandardError => e
+        warn "runeforge: the coder's brief for #{task[:id]} failed: #{e.class}: #{e.message}"
+        nil
       end
 
       # Kept so a coder that stops on purpose (e.g. the locked tests contradict each other) can be
@@ -47,7 +62,7 @@ module Runeforge
       CONTEST_BYTES = 16_384
 
       # Runeforge's own files in .runeforge/; anything else there was written by the agent.
-      OWN_META = %w[prompt.md agent.out agent.err changes.patch agent.rb contest.md skipped setup.out].freeze
+      OWN_META = %w[prompt.md agent.out agent.err changes.patch agent.rb contest.md skipped setup.out context handoff.json].freeze
 
       # "Made no changes" when the agent did change files, but only in .runeforge/ (never committed).
       def only_meta_changes(workspace, message)

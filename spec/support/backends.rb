@@ -4,7 +4,7 @@
 # RUNEFORGE_TEST_PG_URL is set, e.g. postgres://localhost/runeforge_test.
 module Backends
   PG_URL = ENV.fetch("RUNEFORGE_TEST_PG_URL", nil)
-  TABLES = %i[runeforge_lessons runeforge_conversation_messages runeforge_conversations runeforge_plans runeforge_events runeforge_workers runeforge_messages runeforge_tasks runeforge_repos runeforge_schema_info].freeze
+  TABLES = %i[runeforge_index_state runeforge_chunk_vectors runeforge_chunks runeforge_code_files runeforge_facts runeforge_coverage runeforge_code_refs runeforge_anchors runeforge_links runeforge_items runeforge_lessons runeforge_conversation_messages runeforge_conversations runeforge_plans runeforge_events runeforge_workers runeforge_messages runeforge_tasks runeforge_repos runeforge_schema_info].freeze
 
   def self.kinds = PG_URL ? %w[sqlite postgres] : %w[sqlite]
 

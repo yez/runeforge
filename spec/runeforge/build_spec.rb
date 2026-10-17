@@ -447,7 +447,9 @@ RSpec.describe Runeforge::Build do
       it "migrates a database older than the inbox's tables before building it" do
         env = build_env_for
         target = make_project("runeforge/inbox/greeting.md" => "# Add a greeting\n")
-        env.db.drop_table(:runeforge_lessons)
+        env.db.drop_table(:runeforge_lessons, :runeforge_items, :runeforge_links, :runeforge_anchors, :runeforge_code_refs,
+                          :runeforge_coverage, :runeforge_facts, :runeforge_code_files, :runeforge_chunks,
+                          :runeforge_chunk_vectors, :runeforge_index_state)
         env.db.alter_table(:runeforge_repos) { drop_column :devcontainer; drop_column :planned_commands }
         env.db.alter_table(:runeforge_tasks) { drop_column :ui_brief }
         env.db[Runeforge::DB::SCHEMA_TABLE].update(version: 8)

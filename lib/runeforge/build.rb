@@ -453,13 +453,15 @@ module Runeforge
       case msg.type
       when "plan.request" then "· planning"
       when "plan.done"
-        if payload["already_done"]
+        if payload["covered"]
+          "✓ already built by an earlier step (from the ledger, no planner needed); the tests pass (#{sha})"
+        elsif payload["already_done"]
           added = payload["locked_paths"].empty? ? "" : ", #{plural(payload['locked_paths'].size, 'test file')} added"
           "✓ already built by an earlier step; the tests pass#{added} (#{sha})"
         else
           ["✓ planned: #{plural(payload['locked_paths'].size, 'test file')} locked (#{sha})", *skipped_note(payload)].join("\n  ")
         end
-      when "plan.failed" then "✗ planning failed: #{payload['reason']}"
+      when "plan.failed" then payload["conflict"] ? "⚠ #{payload['reason']}" : "✗ planning failed: #{payload['reason']}"
       when "deps.check" then "· checking tools: #{Array(payload['tools']).join(', ')}"
       when "deps.ready" then "✓ tools available"
       when "deps.declined" then "✗ stopped: missing #{Array(payload['missing']).join(', ')}"
@@ -474,11 +476,18 @@ module Runeforge
       when "review.verdict"
         verdict = payload["approved"] ? "✓ locked tests untouched" : "✗ #{Array(payload['reasons']).join('; ')}"
         [verdict, *Array(payload["notes"]).map { |note| "  note: #{note}" }].join("\n  ")
-      when "integrate.request" then merging ? "· merging" : "· updating the branch"
+      when "integrate.request"
+        line = merging ? "· merging" : "· updating the branch"
+        notes = Array(payload["ux_notes"])
+        notes.empty? ? line : [line, "  ! UX review limit reached; left as notes:", *notes.map { |n| "    - #{n}" }].join("\n  ")
+      when "ux.request" then "· UX review in a browser"
+      when "ux.verdict"
+        payload["approved"] ? "✓ UX review passed" : "✗ UX review: #{plural([Array(payload['reasons']).size - 1, 0].max, 'problem')} to fix"
       when "integrate.done"
         line = payload["merged"] ? "✓ merged into #{payload['base']}" : "✓ branch #{payload['branch']} updated"
         line += " (#{payload['pr_url']})" if payload["pr_url"]
-        [line, *Array(payload["warnings"]).map { |warning| "  ! #{warning}" }].join("\n  ")
+        queued = Array(payload["queued"]).map { |q| "  + queued: #{q['title']} (found in #{q['found_in']}: #{q['evidence'].to_s[0, 80]})" }
+        [line, *Array(payload["warnings"]).map { |warning| "  ! #{warning}" }, *queued].join("\n  ")
       when "integrate.failed" then "✗ could not update the branch: #{payload['reason']}"
       end
     end

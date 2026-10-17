@@ -9,6 +9,7 @@ module Runeforge
     # Safe to repeat: the push is idempotent, an existing PR is reused, and merged work is detected.
     class Integrator < Base
       def call
+        @queued = []
         sha = bookkeeping(msg.commit_sha || task[:head_sha])
         return nothing_to_merge(sha) if !task[:merged_sha] && env.repos.contains?(task[:repo], sha)
 
@@ -21,7 +22,7 @@ module Runeforge
         merged = merge(sha, warnings)
         result("integrate.done",
                { "pr_url" => pr_url, "branch" => task[:branch], "base" => repo[:base_branch], "merged" => !merged.nil?,
-                 "merged_sha" => merged, "warnings" => warnings.compact },
+                 "merged_sha" => merged, "warnings" => warnings.compact, "queued" => queued_note }.compact,
                commit_sha: sha, task_updates: { external_pr_url: pr_url, merged_sha: merged, head_sha: sha })
       rescue Error => e
         result("integrate.failed", { "reason" => e.message }, commit_sha: sha)
@@ -33,7 +34,7 @@ module Runeforge
       # commit is already in the base branch, so there's no branch to push or pull request to open.
       def nothing_to_merge(sha)
         result("integrate.done", { "branch" => task[:branch], "base" => repo[:base_branch], "merged" => true,
-                                   "merged_sha" => sha, "warnings" => [] },
+                                   "merged_sha" => sha, "warnings" => [], "queued" => queued_note }.compact,
                commit_sha: sha, task_updates: { merged_sha: sha, head_sha: sha })
       end
 
@@ -66,6 +67,7 @@ module Runeforge
                                       message: Committer.message("runeforge: add the inbox folder", bookkeeping_trailers))
         end
         plan = input["plan"]
+        sha = queue_discoveries(committer, sha, plan) if plan
         return sha unless plan && plan["last"]
 
         delete = env.repos.exists?(task[:repo], sha, plan["path"]) ? [plan["path"]] : []
@@ -78,6 +80,56 @@ module Runeforge
       end
 
       def bookkeeping_trailers = { "Agent-Task" => task[:id], "Agent-Message" => msg.id }
+
+      # Work the step's agents found outside it, queued as inbox plans that wait for this plan
+      # (see Ledger#discoveries! for what's checked first). Committed with the step's work.
+      def queue_discoveries(committer, sha, plan)
+        found = env.db[:runeforge_messages].where(task_id: task[:id], type: %w[plan.done code.done]).order(:id).all.flat_map do |row|
+          message = Message.from_row(row)
+          Array(message.payload.dig("handoff", "discovered")).map { |entry| entry.merge("by" => message.type.split(".").first) }
+        end
+        return sha if found.empty?
+
+        row = env.db[:runeforge_plans].where(id: plan["id"]).first
+        meta = row ? PlanFile.parse(env.repos.blob(task[:repo], row[:blob])).meta : {}
+        exists = file_at(sha)
+        @queued = env.ledger.discoveries!(task, found, plan_meta: meta, exists: ->(path) { !exists.call(path).nil? })
+        return sha if @queued.empty?
+
+        write = @queued.to_h do |entry|
+          slug = Build.slug(entry[:title]).then { |s| s.empty? ? "found" : s }
+          ["#{Inbox::INBOX}/found-#{slug}-#{entry[:id][-6..]}.md", discovered_plan(entry, plan)]
+        end
+        committer.host_commit(parent: sha, branch: task[:branch], write:,
+                              message: Committer.message("runeforge: queue #{write.size} found while building #{task[:id]}", bookkeeping_trailers))
+      rescue Error => e
+        warn "runeforge: couldn't queue discovered work for #{task[:id]}: #{e.message}"
+        sha
+      end
+
+      def discovered_plan(entry, plan)
+        <<~MD
+          ---
+          title: #{entry[:title].gsub(/[\r\n:#]/, ' ').strip}
+          after: #{plan['name']}
+          discovered_from: #{task[:id]}
+          ---
+
+          # #{entry[:title]}
+
+          - [ ] #{entry[:title]}
+            #{entry[:why].to_s.gsub(/\s+/, ' ').strip}
+            Evidence: #{entry[:evidence].to_s.gsub(/\s+/, ' ').strip}
+
+          Found by Runeforge's agents while building `#{task[:id]}` (ledger item `#{entry[:id]}`). Delete this file to drop it.
+        MD
+      end
+
+      def queued_note
+        return nil if @queued.to_a.empty?
+
+        @queued.map { |entry| { "title" => entry[:title], "evidence" => entry[:evidence], "found_in" => task[:id] } }
+      end
 
       def input
         @input ||= Message.parse_payload(env.db[:runeforge_messages].where(task_id: task[:id], type: "task.created").get(:payload) || "{}")

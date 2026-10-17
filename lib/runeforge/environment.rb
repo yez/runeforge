@@ -27,6 +27,12 @@ module Runeforge
 
     def memory = (@memory ||= Memory.new(db, config["memory"]))
 
+    def ledger = (@ledger ||= Ledger.new(db, config["ledger"]))
+
+    def embedder = (@embedder ||= Embedder.new(config["memory"]))
+
+    def code_index = (@code_index ||= CodeIndex.new(db, config["index"], repos:, embedder:))
+
     def mailbox(worker_id)
       Mailbox.new(db, worker_id:, lease_seconds: config["lease_seconds"], max_deliveries: config["max_deliveries"])
     end

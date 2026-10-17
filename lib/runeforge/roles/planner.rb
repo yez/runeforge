@@ -13,7 +13,7 @@ module Runeforge
 
       private
 
-      def plan(workspace)
+      def plan(workspace, skip_ledger: false)
         input = msg.payload.fetch("input", {})
         verdict = check_platform(workspace, input)
         if verdict.incompatible?
@@ -25,14 +25,19 @@ module Runeforge
           return result("plan.failed", { "reason" => "incompatible build environment: #{mismatch}. To fix: #{runtime_fix}" })
         end
 
+        # The ledger shows every requirement of this step built by an earlier one, with tests that
+        # passed: check the suite still passes here and skip the planner session altogether.
+        return finish_covered unless skip_ledger || msg.payload["feedback"] || !env.ledger.enabled? || !env.ledger.covered?(task[:id])
+
         pitfalls = env.memory.pitfalls(repo: task[:repo], query: [input["title"], input["description"]].compact.join("\n"),
-                                       exclude_task: task[:id])
-        prompt = Prompts.plan(task:, input:, test_globs:, test_command: repo[:test_command], locked_paths: locked_paths.keys,
+                                       exclude_task: task[:id], plan: Memory.plan_of(task[:id]))
+        prompt = Prompts.plan(task:, input:, test_globs: shown_test_globs, test_command: repo[:test_command], locked_paths: locked_paths.keys,
                               environment: verdict.environment.description, feedback: msg.payload["feedback"],
                               apple: apple_toolchain(verdict.platform), run_command: repo[:run_command],
                               pitfalls:, setup_command: repo[:setup_command],
                               setup_fixed: !RepoStore.planned(repo).include?("setup_command"),
-                              ux_review: ux_review_mode(input))
+                              ux_review: ux_review_mode(input), stack: Prompts.stacks(@paths || []),
+                              ui_hint: Prompts.ui_hint?(input), brief: brief_for(workspace, input))
         # Every plan, a re-plan included, starts a conversation for the coder to continue.
         conversation = conversations? ? env.conversations.start(task_id: task[:id], repo: task[:repo], adapter: agent.adapter.name) : nil
         run = run_agent(workspace, prompt, conversation:, setup: repo[:setup_command])
@@ -49,6 +54,10 @@ module Runeforge
                         run, updates)
         end
 
+        handoff = Handoff.read(workspace)
+        conflict = Array(handoff&.dig("requirements")).select { |req| req.is_a?(Hash) && req["status"] == "conflict" }
+        return conflicted(conflict, run, updates) if conflict.any?
+
         project = read_project(workspace)
         if (long = COMMANDS.find { |key| project[key].to_s.size > COMMAND_MAX })
           return failed("#{long} in .runeforge/project.json is #{project[long].size} characters (at most #{COMMAND_MAX}): " \
@@ -61,7 +70,7 @@ module Runeforge
         end
 
         already_done = workspace.read_meta_text("already_done.md", max_bytes: 16_384).to_s.strip
-        return finish_already_done(workspace, run, updates, project, already_done) unless already_done.empty?
+        return finish_already_done(workspace, run, updates, project, already_done, handoff) unless already_done.empty?
 
         commit = env.committer(task[:repo]).commit(
           patch: workspace.read_meta("changes.patch", max_bytes: limits["max_patch_bytes"]),
@@ -89,9 +98,11 @@ module Runeforge
         end
 
         spec = workspace.read_meta_text("spec.md", max_bytes: limits["max_spec_bytes"]).to_s
+        checked = Handoff.check(handoff, role: :planner, file: file_at(commit.sha))
         result("plan.done", { "spec" => spec, "locked_paths" => locked, "project" => project, "log_path" => run.log_path,
                               "ui" => ui_brief(workspace, input),
-                              "skipped" => skipped(workspace).then { |list| list.empty? ? nil : list } }.compact,
+                              "skipped" => skipped(workspace).then { |list| list.empty? ? nil : list },
+                              "handoff" => checked&.data, "handoff_dropped" => checked&.dropped&.first(20).then { |d| d&.any? ? d : nil } }.compact,
                commit_sha: commit.sha, task_updates: updates)
       rescue Committer::PatchRejected, Workspace::UnsafeFile => e
         failed(e.message, run, updates || {}, retryable: true)
@@ -100,7 +111,38 @@ module Runeforge
       # The planner found an earlier step already built this one (.runeforge/already_done.md). It may
       # add tests that pin that down, and nothing else; the whole suite must pass on the result,
       # and then the step goes straight to merging (see the workflow's plan.done).
-      def finish_already_done(workspace, run, updates, project, reason)
+      # Every requirement is already built (see Ledger#covered?): the suite must pass at the base
+      # commit, and then the step merges with no planner or coder session.
+      def finish_covered
+        reason = "Already built, from the ledger:\n#{env.ledger.coverage_reason(task[:id])}"
+        if RepoStore.command(repo, "test_command", {}).empty? || (problem = probe_tests(task[:base_sha], {}, must_pass: true))
+          return plan_with_agent_after_all(problem)
+        end
+
+        result("plan.done", { "spec" => reason, "already_done" => reason, "covered" => true, "locked_paths" => {}, "project" => {} },
+               commit_sha: task[:base_sha])
+      end
+
+      # The ledger thought the step was built but the suite doesn't pass: plan it as usual.
+      def plan_with_agent_after_all(problem)
+        warn "runeforge: #{task[:id]} looked built but the tests fail; planning it: #{problem.to_s.lines.first}" if problem
+        with_workspace(task[:base_sha], "plan") { |workspace| plan(workspace, skip_ledger: true) }
+      end
+
+      # The planner found the step contradicts what the project documents or tests: a person
+      # decides, so it doesn't retry. Only cites that check out against the base commit are kept.
+      def conflicted(requirements, run, updates)
+        file = file_at(task[:base_sha])
+        dropped = []
+        cites = requirements.flat_map { |req| Handoff.list(req["cites"], strings: true).filter_map { |cite| Handoff.check_cite(cite, file, dropped) } }.uniq
+        summary = agent.adapter.summary(run.output).to_s.strip
+        reason = "needs a decision: the step contradicts how the project works#{cites.any? ? " (#{cites.first(6).join(', ')})" : ''}" \
+                 "#{summary.empty? ? '' : ". The planner: #{summary[0, 1200]}"}"
+        result("plan.failed", { "reason" => reason, "conflict" => true, "cites" => cites, "log_path" => run.log_path }.compact,
+               task_updates: updates)
+      end
+
+      def finish_already_done(workspace, run, updates, project, reason, handoff = nil)
         patch = workspace.read_meta("changes.patch", max_bytes: limits["max_patch_bytes"])
         sha = task[:base_sha]
         locked = {}
@@ -128,8 +170,9 @@ module Runeforge
           return failed(problem, run, updates, retryable: true)
         end
 
+        checked = Handoff.check(handoff, role: :planner, file: file_at(sha))
         result("plan.done", { "spec" => reason, "already_done" => reason, "locked_paths" => locked, "project" => project,
-                              "log_path" => run.log_path }, commit_sha: sha, task_updates: updates)
+                              "log_path" => run.log_path, "handoff" => checked&.data }.compact, commit_sha: sha, task_updates: updates)
       end
 
       # The UX review for this step: the plan's `ux_review:` (auto, always, never), unless
@@ -183,6 +226,7 @@ module Runeforge
       # request (unless the person already confirmed the request text), recorded on the repo.
       def check_platform(workspace, input)
         paths, read = Platform.scan_dir(workspace.path)
+        @paths = paths
         text = [input["title"], input["description"], input["context"]].compact.join("\n")
         need = Platform.detect(paths:, read:, text:, files_only: input["platform_confirmed"] == true)
         Platform.verdict(env, repo, need).tap do |verdict|
@@ -293,6 +337,23 @@ module Runeforge
       end
 
       def test_globs = env.config["test_globs"]
+
+      # The test_globs the project's files already match, for the prompt: a Node project needn't
+      # read twenty patterns for Swift and Kotlin. All of them for a project with no tests yet.
+      def shown_test_globs
+        used = test_globs.select { |glob| (@paths || []).any? { |path| File.fnmatch?(glob, path, File::FNM_PATHNAME | File::FNM_EXTGLOB) } }
+        used.empty? ? test_globs : used
+      end
+
+      # The ledger's brief for this step (see Brief); nil without a ledger or when it has nothing.
+      def brief_for(workspace, input)
+        return nil unless env.ledger.enabled?
+
+        Brief.new(env, task:, repo:, input:, workspace:).planner
+      rescue StandardError => e
+        warn "runeforge: the brief for #{task[:id]} failed: #{e.class}: #{e.message}"
+        nil
+      end
 
       def test_path?(path)
         test_globs.any? { |glob| File.fnmatch?(glob, path, File::FNM_PATHNAME | File::FNM_EXTGLOB) }

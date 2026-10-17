@@ -161,6 +161,37 @@ module Runeforge
     end
   end
 
+  # The code index (see CodeIndex): what the brief's code map is built from.
+  class ContextCommand < Command
+    desc "index REPO", "Index a repository's code at its base branch (or --sha) for the brief's code map"
+    option :sha, desc: "Commit to index (default: the base branch)"
+    def index(repo)
+      guard do
+        name = env.repos.fetch(repo)[:name]
+        sha = options[:sha] || env.repos.refresh(name)
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        stats = env.code_index.index!(name, sha)
+        seconds = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).round(1)
+        embedded = env.embedder.enabled? ? "embedded with #{env.embedder.model}" : "no embedding model (words and anchors only)"
+        say "#{name} at #{short(sha)}: #{stats[:files]} files, #{stats[:chunks]} chunks (#{stats[:new_files]} files new), #{embedded}, #{seconds}s"
+      end
+    end
+
+    desc "search REPO QUERY", "Show the code the brief would hand an agent for QUERY"
+    option :sha, desc: "Commit to search (default: the base branch)"
+    option :limit, type: :numeric, default: 15
+    def search(repo, query)
+      guard do
+        name = env.repos.fetch(repo)[:name]
+        sha = options[:sha] || env.repos.refresh(name)
+        env.code_index.index!(name, sha)
+        results = env.code_index.search(name, sha, query:, anchors: Ledger.anchors(query), limit: options[:limit])
+        say "Nothing found for #{query.inspect}." if results.empty?
+        results.each { |r| say format("%6.2f  %s  (%s; %s)", r.score, r.label, r.kind, r.why.join(", ")) }
+      end
+    end
+  end
+
   class TaskCommand < Command
     desc "create", "Create a task from a ticket or a spec file"
     option :repo, required: true
@@ -336,6 +367,64 @@ module Runeforge
 
     desc "task SUBCOMMAND", "Task commands"
     subcommand "task", TaskCommand
+
+    desc "context SUBCOMMAND", "Index and search a project's code (the brief's code map)"
+    subcommand "context", ContextCommand
+
+    desc "items [REPO]", "List the ledger's plans, tickets and requirements, with their status and owner"
+    option :plan, desc: "Only this plan (its name)"
+    option :tree, type: :boolean, desc: "Show requirements and links under each ticket"
+    option :all, type: :boolean, desc: "Include finished plans' items"
+    def items(repo = nil)
+      guard do
+        ledger = env.ledger
+        scope = ledger.items.exclude(kind: "requirement")
+        scope = scope.where(repo: env.repos.fetch(repo)[:name]) if repo
+        scope = scope.where(Sequel.like(:id, "#{Build.slug(options[:plan])}-p%")) if options[:plan]
+        rows = scope.order(:repo, :plan_id, :position, :id).all
+        rows = rows.reject { |row| row[:kind] == "plan" && Ledger::CLOSED.include?(row[:status]) } unless options[:all]
+        say "No items yet: they're made when an inbox plan starts." if rows.empty?
+        rows.each do |row|
+          indent = row[:kind] == "plan" ? "" : "  "
+          owner = row[:task_id] ? " [#{row[:task_id]}]" : ""
+          say "#{indent}#{row[:id]}  #{row[:status]}#{owner}  #{row[:title].to_s[0, 80]}"
+          next unless options[:tree] && row[:kind] != "plan"
+
+          ledger.children(row[:id]).each { |req| say "      #{ledger.short_id(req[:id])}  #{req[:status]}  #{req[:title].to_s[0, 70]}" }
+          ledger.links_of(row[:id]).reject { |l| %w[parent-child].include?(l[:type]) }.each do |l|
+            other = l[:from_id] == row[:id] ? l[:to_id] : l[:from_id]
+            say "      #{l[:type]} #{other}#{l[:note] ? " (#{l[:note][0, 60]})" : ''}"
+          end
+        end
+      end
+    end
+
+    desc "show ITEM", "Show a ledger item: its text, owner, links, code pointers, covering tests"
+    def show(id)
+      guard do
+        ledger = env.ledger
+        item = ledger.find(id) || raise(Error, "no item #{id}; `runeforge items` lists them")
+        say "#{item[:id]} (#{item[:kind]}): #{item[:title]}"
+        say "status: #{item[:status]}#{item[:task_id] ? ", owned by #{item[:task_id]}" : ''}#{item[:close_reason] ? " (#{item[:close_reason]})" : ''}"
+        say "\n#{item[:body].strip}" unless item[:body].to_s.strip.empty?
+        anchors = ledger.anchors_of(item[:id])
+        say "\nanchors: #{anchors.map { |kind, value| "#{kind} #{value}" }.join(', ')}" if anchors.any?
+        children = ledger.children(item[:id])
+        say "\nrequirements:\n#{children.map { |c| "  #{c[:id]}  #{c[:status]}  #{c[:title].to_s[0, 80]}" }.join("\n")}" if children.any?
+        links = ledger.links_of(item[:id]).reject { |l| l[:type] == "parent-child" }
+        say "\nlinks:\n#{links.map { |l| "  #{l[:from_id]} #{l[:type]} #{l[:to_id]}#{l[:note] ? ": #{l[:note]}" : ''}" }.join("\n")}" if links.any?
+        refs = ledger.refs_for([item[:id]] + children.map { |c| c[:id] }, include_stale: true)
+        if refs.any?
+          say "\ncode:"
+          refs.each { |r| say "  #{r[:path]}#{r[:line_start] ? ":#{r[:line_start]}" : ''}#{r[:symbol] ? " #{r[:symbol]}" : ''} (#{r[:role]}, #{r[:source]}#{r[:stale] ? ', stale' : ''})#{r[:note] ? ": #{r[:note]}" : ''}" }
+        end
+        tests = ledger.coverage_for([item[:id]] + children.map { |c| c[:id] })
+        if tests.any?
+          say "\ntests:"
+          tests.each { |t| say "  #{t[:test_path]}#{t[:test_name] ? " > #{t[:test_name]}" : ''}#{t[:last_passed_sha] ? " (passed at #{short(t[:last_passed_sha])})" : ''}" }
+        end
+      end
+    end
 
     map %w[-v --version] => :version
     map "retry" => :retry_task

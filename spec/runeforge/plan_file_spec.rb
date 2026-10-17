@@ -105,33 +105,73 @@ RSpec.describe Runeforge::PlanFile, "grouping steps into tasks" do
     described_class.parse("#{front}#{(1..items).map { |n| "- Part #{n}\n" }.join}")
   end
 
-  it "keeps short plans one task per step and packs longer ones in groups of about three" do
+  it "runs one task per step however long the plan is" do
     expect(plan(3).steps.map(&:title)).to eq(["Part 1", "Part 2", "Part 3"])
-    expect(plan(9).steps.map(&:title)).to eq(["Part 1 (+2 more)", "Part 4 (+2 more)", "Part 7 (+2 more)"])
-    expect(plan(5).steps.map(&:title)).to eq(["Part 1 (+2 more)", "Part 4 (+1 more)"])
-    expect(plan(9).steps.first.body).to eq("Part 1\n\nPart 2\n\nPart 3")
+    expect(plan(9).steps.size).to eq(9)
+    expect(plan(9, steps: "each").steps.size).to eq(9)
   end
 
-  it "groups the WordReel roadmap's 13 step headings into 5 tasks" do
+  it "keeps the WordReel roadmap's 13 step headings as 13 tasks" do
     plan = described_class.parse(File.read(File.expand_path("../fixtures/wordreel_roadmap.md", __dir__)))
 
-    expect(plan.steps.size).to eq(5)
-    expect(plan.steps.first.body).to include("Step 1: Project Setup", "Step 3:")
+    expect(plan.steps.size).to eq(13)
+    expect(plan.steps.first.body).to include("Step 1: Project Setup")
   end
 
-  it "follows steps: each and steps: N from the front matter" do
-    expect(plan(9, steps: "each").steps.size).to eq(9)
+  it "groups steps when steps: N asks for at most N tasks" do
     expect(plan(9, steps: 2).steps.map(&:title)).to eq(["Part 1 (+4 more)", "Part 6 (+3 more)"])
+    expect(plan(9, steps: 3).steps.first.body).to eq("Part 1\n\nPart 2\n\nPart 3")
     expect(plan(2, steps: 5).steps.size).to eq(2)
   end
 
   it "shortens a long group title to fit" do
-    long = described_class.parse("- #{'x' * 80}\n- b\n- c\n- d\n")
+    long = described_class.parse("---\nsteps: 2\n---\n- #{'x' * 80}\n- b\n- c\n- d\n")
     expect(long.steps.first.title).to end_with("… (+1 more)").and(have_attributes(size: 72))
   end
 
   it "refuses any other steps value" do
     expect { plan(4, steps: "some") }.to raise_error(Runeforge::Error, /steps in the front matter must be auto, each/)
     expect { plan(4, steps: 0) }.to raise_error(Runeforge::Error, /steps in the front matter/)
+  end
+end
+
+RSpec.describe Runeforge::PlanFile, "nested lists" do
+  it "keeps indented sub-bullets in their ticket instead of making them steps" do
+    plan = described_class.parse(<<~MD)
+      # Calendar
+
+      - [ ] iCalendar feed.
+        `GET /api/members/:id/calendar.ics` returns the member's bookings.
+        - One `VEVENT` per active booking.
+        - One `VEVENT` per series.
+        - Expanded, the feed's events are exactly the member's active bookings.
+
+      - [ ] Member week grid.
+        UI: a new screen at `/book`.
+        - A court picker above a grid of the week.
+        * Every cell has `data-testid="slot-<local start>"`.
+
+      - [ ] Admin closures screen.
+         1. A form to add a closure.
+    MD
+
+    expect(plan.steps.map(&:title)).to eq(["iCalendar feed.", "Member week grid.", "Admin closures screen."])
+    expect(plan.steps.first.body).to include("One `VEVENT` per series.", "Expanded, the feed's events")
+    expect(plan.steps[1].body).to include('data-testid="slot-<local start>"')
+    expect(plan.steps[2].body).to include("1. A form to add a closure.")
+  end
+
+  it "parses the Courtside calendar plan into its three tickets" do
+    path = File.expand_path("../fixtures/courtside_calendar.md", __dir__)
+    plan = described_class.parse(File.read(path))
+
+    expect(plan.steps.size).to eq(3)
+    expect(plan.steps.map(&:title)).to eq(["iCalendar feed.", "Member week grid.", "Admin closures screen."])
+  end
+
+  it "takes the first item's indent as the top level" do
+    plan = described_class.parse("Intro\n\n  - one\n    - detail\n  - two\n")
+    expect(plan.steps.map(&:title)).to eq(%w[one two])
+    expect(plan.steps.first.body).to include("- detail")
   end
 end

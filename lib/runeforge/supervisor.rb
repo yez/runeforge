@@ -229,7 +229,8 @@ module Runeforge
       end
 
       def fail!(reason)
-        learn("failed", reason)
+        learn("failed", reason) unless reason.to_s.start_with?("needs a decision")
+        ledger { |l| l.release!(task[:id]) }
         cancel_in_flight!
         update_task(status: "failed", error: reason)
       end
@@ -240,6 +241,40 @@ module Runeforge
       rescue Sequel::Error
         nil # a lesson that can't be saved never stops the task
       end
+
+      # Runs a ledger update; one that fails never stops the task (like #learn).
+      def ledger
+        return unless @env.ledger.enabled?
+
+        yield @env.ledger
+      rescue Sequel::Error, Error, Git::CommandFailed, SystemCallError => e
+        warn "runeforge: ledger update for #{task[:id]} failed: #{e.class}: #{e.message}"
+        nil
+      end
+
+      # The step merged: its items close, the code it changed gets pointers, and the tests it
+      # locked become coverage, with their names read from the merged files.
+      def close_in_ledger!(result)
+        ledger do |l|
+          repo = task[:repo]
+          next unless File.directory?(@env.repos.path(repo))
+
+          sha = result.payload["merged_sha"] || result.commit_sha || task[:head_sha]
+          changed = sha == task[:base_sha] ? [] : @env.repos.changed_files(repo, from: task[:base_sha], to: sha)
+          oids = changed.to_h { |path| [path, @env.repos.oid(repo, sha, path)] }
+          tests = JSON.parse(task[:locked_paths] || "{}").keys & changed
+          names = tests.to_h { |path| [path, oids[path] ? TestNames.in(@env.repos.blob(repo, oids[path])) : []] }
+          plan = messages_this_round.where(type: "plan.done").order(Sequel.desc(:id)).first
+          already = plan ? Message.from_row(plan).payload["already_done"] : nil
+          l.close_step!(task, sha:, already: !already.nil?, changed:, test_names: names, oids:,
+                              exists: ->(path) { !@env.repos.oid(repo, sha, path).nil? })
+        end
+      end
+
+      def ux_rejections = @env.db[:runeforge_messages].where(task_id: task[:id], type: "ux.verdict").all
+                                                       .count { |row| !Message.from_row(row).payload["approved"] }
+
+      def ux_round_limit = (@env.config.dig("ux_review", "max_rounds") || 2).to_i.clamp(1, 20)
 
       def complete!(**fields)
         update_task(fields.merge(status: "done", error: nil))

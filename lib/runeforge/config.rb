@@ -180,7 +180,36 @@ module Runeforge
         "embedding_model" => nil,
         "embedding_provider" => nil,
         "embedding_key_env" => nil,
-        "min_similarity" => 0.5
+        # With embedding_provider: ollama, where Ollama listens on this machine (never reachable
+        # from the sandbox; see Embedder).
+        "embedding_url" => nil,
+        "min_similarity" => 0.5,
+        # Another plan's lessons must score at least this to be shown (see Memory::OTHER_PLAN_BAR).
+        "lesson_bar" => 3.0
+      },
+      # What each step is for, which code does what, which tests pin which requirement, and what
+      # agents learned, handed to the agents of later steps (see Ledger and Brief).
+      "ledger" => {
+        "enabled" => true,
+        # Work an agent found outside its step, queued as a plan of its own; at most this many per plan.
+        "max_discovered" => 3,
+        # The brief's size in characters (about a quarter as many tokens).
+        "brief_chars" => 10_000,
+        # Facts kept per project; the least used go first.
+        "max_facts" => 200,
+        # Done items of plans this many plans back collapse to their close reason and pointers.
+        "compact_after_plans" => 3
+      },
+      # The project's code split into chunks once per file version (see CodeIndex): the brief's
+      # code map. Embeddings come from the memory.embedding_* settings when they're set.
+      "index" => {
+        "enabled" => true,
+        "max_file_kb" => 200,
+        "map_lines" => 20,
+        "inline_chunks" => 3,
+        # How much embeddings count next to anchors and words. On the Courtside replay, whose
+        # tickets name exact routes and fields, more than 1 found fewer of the files steps changed.
+        "meaning_weight" => 1.0
       },
       "limits" => {
         "max_patch_bytes" => 2_000_000,
@@ -231,7 +260,9 @@ module Runeforge
       # A step whose plan changes the UI is opened in a real browser by the UX reviewer before it's
       # merged (Roles::UxReviewer); a plan's `ux_review:` front matter can also ask for or skip it.
       "ux_review" => {
-        "enabled" => true
+        "enabled" => true,
+        # Rejected UX reviews of one step before it merges anyway, with the findings as notes.
+        "max_rounds" => 2
       },
       "inbox" => {
         "enabled" => true,

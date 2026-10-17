@@ -53,6 +53,7 @@ module Runeforge
       sandboxed ? container_checks : host_checks
       credentials_check
       checkout_check
+      embeddings_check
       # A project waiting on its environment can go again once it checks out (see Inbox).
       @env.repos.update(@repo_name, platform_status: nil, platform_note: nil) if ready? && repo[:platform_status] == "incompatible"
       self
@@ -190,6 +191,19 @@ module Runeforge
 
       check("versions", :failed, "the project pins #{wrong.join(' and ')} on this machine",
             "install the pinned versions (e.g. with mise, rbenv or nvm) so they're used in #{@directory}")
+    end
+
+    # Only when an embedding model is set: it's an extra, so a model that doesn't answer is a
+    # warning (the code index then searches by anchors and words), never a reason not to build.
+    def embeddings_check
+      embedder = @env.embedder
+      return unless embedder.enabled?
+
+      ok, detail = embedder.check
+      return check("embeddings", :ok, detail) if ok
+
+      fix = embedder.ollama? ? "start Ollama (`ollama serve`) and run `ollama pull #{embedder.model}`" : "check memory.embedding_* in #{Config.locate}"
+      check("embeddings", :warning, "#{detail} The code map will search by anchors and words.", fix)
     end
 
     def credentials_check

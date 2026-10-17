@@ -9,9 +9,15 @@ module Runeforge
     # pitfalls: lessons from earlier steps of this project that went wrong (see Memory).
     # setup_command: the project's setup command, which Runeforge ran before the agent started;
     # setup_fixed: a person set it, so a plan can't replace it.
+    # stack: the project's stacks (see .stacks); empty for a new or unrecognised project, which
+    # gets the guidance for every stack. ui_hint: whether the step's text names a screen (see
+    # .ui_hint?); a step that names none gets one line about ui.md instead of the whole brief.
+    # brief: the ledger's brief for this step (see Brief), or nil.
     def plan(task:, input:, test_globs:, test_command:, locked_paths: [], environment: nil, feedback: nil, apple: nil,
-             run_command: nil, pitfalls: [], setup_command: nil, setup_fixed: false, ux_review: "auto")
+             run_command: nil, pitfalls: [], setup_command: nil, setup_fixed: false, ux_review: "auto", stack: [],
+             ui_hint: true, brief: nil)
       setup_command = setup_command.to_s.strip
+      stack = Array(stack)
       sections = ["You are the planning agent for task #{task[:id]}."]
       if environment
         sections << "## Environment\nYou, the coder and the tests all run on #{environment}. Plan only what can be " \
@@ -22,7 +28,7 @@ module Runeforge
       sections << apple_section(apple) if apple
       if input["context"]
         sections << "## The whole request (you are doing step #{input['step']})\n#{input['context']}"
-        sections << "## This step\n#{[input['title'], input['description']].compact.join("\n\n")}"
+        sections << this_step(input)
       else
         sections << "## The request\n#{[input['title'] || task[:title], input['description']].compact.join("\n\n")}"
       end
@@ -30,6 +36,7 @@ module Runeforge
         sections << "## Plans queued after this one\nOther agents will build these later. Don't build any of them now, even if it seems natural; stay within this request.\n" +
                     input["queued"].map { |title| "- #{title}" }.join("\n")
       end
+      sections << brief.strip if brief && !brief.strip.empty?
       if locked_paths.any?
         sections << "## Existing acceptance tests\nThese are locked from earlier steps. Keep them passing; change them only if this step truly requires it.\n" +
                     locked_paths.map { |path| "- #{path}" }.join("\n")
@@ -44,8 +51,9 @@ module Runeforge
       end
       sections << <<~JOB
         ## Your job
-        1. Read what is in the repository (it may be empty) and decide how this step fits in.
-        2. Write a short implementation spec to `.runeforge/spec.md`: what changes, where, and how it is verified.
+        1. Read what is in the repository (it may be empty) and decide how this step fits in.#{brief ? " Start from the files the brief names." : ""}
+        2. Write a short implementation spec to `.runeforge/spec.md`, at most about 25 lines: the files to change,
+           the decisions the coder needs, and the assertions you checked against existing code. Don't restate the request.
         3. Write acceptance tests that fail now and will pass once this step is built. Test files must match
            one of: #{test_globs.join(', ')}
         4. If the project has no way to run tests yet, add the minimum scaffolding for that (for example a
@@ -65,34 +73,33 @@ module Runeforge
 
         #{how_it_runs(run_command)}
 
+        ## How many tests
+        - One test (`it`, `test`, `def test_`) per rule the step states. Check that rule's cases
+          together in it; don't write a separate test for every input of the same rule.
+        - Test only what this step adds or changes. Behaviour the locked tests already pin stays covered by them.
+        - Use the project's shared test helpers (setup, fixtures, factories, request helpers), and put new
+          shared setup there instead of defining it again in each test file.
+
         ## Tests that can pass
         - Acceptance tests exercise the project's own code, in its own language and test framework
-          (Swift: XCTest with `swift test`/`xcodebuild test`; Kotlin: JUnit with Gradle; Python:
-          pytest; JavaScript: node --test, vitest or jest). Never substitute tests in another
+          (#{framework_examples(stack)}). Never substitute tests in another
           language, or tests that only check that files or words exist.
         - If this environment can't build or test the stack (its toolchain isn't here, e.g. an
           iOS or macOS app needs Xcode on a Mac), don't work around it: write the reason and what
           the project needs to `.runeforge/blocked.md`, change nothing else, and stop.
         - Run only your new test files, not the whole suite: most runners take file paths
-          (`npx vitest run test/foo.test.js`, `node --test test/foo.test.js`, `python -m pytest tests/test_foo.py`,
-          `bundle exec rspec spec/foo_spec.rb`) or a filter (`swift test --filter`, `cargo test foo`,
-          `go test -run Foo`). The new tests must be found and run, and fail because the feature is
+          or a filter (#{run_examples(stack)}). The new tests must be found and run, and fail because the feature is
           missing (their assertions, or imports of code that doesn't exist yet), not because the
           runner can't find or load them. The output must name your test cases:
           a runner crash reported as a single failing test (for example one "test" named after a
           directory, or `Cannot find module`) means the command is wrong. Once you finish, Runeforge runs
           test_command on your plan and sends it back if the tests don't build or run, so don't
           run the whole suite to check the locked tests: you aren't changing the code they test.
-        - Compiled stacks (Swift, Rust, Kotlin/Java, Go, C#) build the whole test target first, so one
-          missing type stops every test and hides every assertion. There, add the smallest stubs of the
-          new types and functions to the source so the suite builds: placeholder bodies that return
-          empty or default values, never ones that crash or trap (`fatalError`, `panic!`, `TODO()`).
-          Then the locked tests must pass and each new test must fail on its own assertion. Runeforge
-          rejects a plan whose tests don't compile.
-        - Work through every assertion that depends on behaviour that already exists (and that the
-          locked tests pin down) by hand against the current code: follow the inputs through each
-          call and check that the expected value is what that code produces. Another agent can't
-          change your tests, so one assertion that contradicts a locked test fails the whole step.
+        #{compiled_section(stack)}- Where an assertion depends on behaviour that already exists (and that the locked tests pin
+          down), check it by hand against the current code: follow the inputs through each call and
+          check that the expected value is what that code produces, and list those assertions in the
+          spec. Another agent can't change your tests, so one assertion that contradicts a locked test
+          fails the whole step. Assertions about behaviour this step adds don't need that walk-through.
         - Every assertion must be able to fail. Don't compare a value with itself or with an
           expression that always evaluates to it.
         - If this step deliberately changes behaviour that a locked test from an earlier step asserts
@@ -100,13 +107,10 @@ module Runeforge
           what the step now requires. You are the only one who can: the coder can't change locked tests,
           and one that still asserts the old behaviour makes the step impossible or leaves a stale rule
           behind.
-        - Node: `node --test` with no arguments finds test/**/*.test.js (and .mjs, .cjs); or list the
-          files, `node --test test/*.test.js`. Never `node --test <directory>`: Node 22 loads the
-          directory as a module and runs nothing.
-        - `.runeforge/` is Runeforge's scratch space and is never committed. Tests and code must
+        #{node_section(stack)}- `.runeforge/` is Runeforge's scratch space and is never committed. Tests and code must
           not read or write anything there (spec.md and project.json are for Runeforge only).
 
-        #{ui_section(ux_review)}
+        #{ui_hint == false && ux_review == "auto" ? short_ui_section : ui_section(ux_review)}
         ## When the step is already built
         If the repository already does everything this step asks (an earlier step built it along
         with its own), don't invent work or tests that can't fail. Write `.runeforge/already_done.md`
@@ -118,8 +122,125 @@ module Runeforge
         - Do not implement the step itself (compile-only stubs are fine). Another agent will, and it cannot change your test files.
         - Do not change anything under `runeforge/` (the project's plan inbox); such changes are rejected.
         - Do not commit. Leave your changes in the working tree.
+        - When you finish, end with at most three lines: what you planned and anything the coder must know.
+          The spec and the tests carry the rest.
+
+        #{handoff_section(:planner)}
       JOB
       sections.join("\n\n")
+    end
+
+    # "## This step": the step's text, or only its title when that text is already in the whole
+    # request shown above it (an inbox plan's item), so the prompt doesn't carry it twice.
+    def this_step(input)
+      body = input["description"].to_s
+      squeeze = ->(text) { text.to_s.gsub(/\s+/, " ").strip }
+      if !body.strip.empty? && squeeze.call(input["context"]).include?(squeeze.call(body))
+        "## This step\n#{input['title']}\nIt is that item in the request above (#{input['step']}); build only that item."
+      else
+        "## This step\n#{[input['title'], input['description']].compact.join("\n\n")}"
+      end
+    end
+
+    # What a project is built with, from its file names (Platform.scan_dir's paths): node, ruby,
+    # python, go, rust, jvm, dotnet, swift. Empty for a new project or one it doesn't recognise.
+    STACK_FILES = {
+      "node" => /\A(?:.*\/)?package\.json\z/, "ruby" => /\A(?:.*\/)?(?:Gemfile|.*\.gemspec)\z/,
+      "python" => /\A(?:.*\/)?(?:pyproject\.toml|requirements.*\.txt|setup\.py|Pipfile)\z/,
+      "go" => /\A(?:.*\/)?go\.mod\z/, "rust" => /\A(?:.*\/)?Cargo\.toml\z/,
+      "jvm" => /\A(?:.*\/)?(?:build\.gradle(?:\.kts)?|pom\.xml)\z/, "dotnet" => /\.(?:csproj|sln)\z/,
+      "swift" => /\A(?:.*\/)?Package\.swift\z|\.xcodeproj(?:\/|\z)/
+    }.freeze
+    COMPILED = %w[go rust jvm dotnet swift].freeze
+
+    def stacks(paths) = STACK_FILES.select { |_stack, pattern| paths.any? { |path| path.match?(pattern) } }.keys
+
+    FRAMEWORKS = {
+      "swift" => "Swift: XCTest with `swift test`/`xcodebuild test`", "jvm" => "Kotlin or Java: JUnit with Gradle or Maven",
+      "python" => "Python: pytest", "node" => "JavaScript: node --test, vitest or jest", "ruby" => "Ruby: rspec or minitest",
+      "go" => "Go: `go test`", "rust" => "Rust: `cargo test`", "dotnet" => "C#: `dotnet test`"
+    }.freeze
+    RUNS = {
+      "node" => "`npx vitest run test/foo.test.js`, `node --test test/foo.test.js`", "python" => "`python -m pytest tests/test_foo.py`",
+      "ruby" => "`bundle exec rspec spec/foo_spec.rb`", "swift" => "`swift test --filter`", "rust" => "`cargo test foo`",
+      "go" => "`go test -run Foo`", "jvm" => "`./gradlew test --tests Foo`", "dotnet" => "`dotnet test --filter Foo`"
+    }.freeze
+
+    def framework_examples(stack) = (stack.empty? ? FRAMEWORKS.values_at("swift", "jvm", "python", "node") : FRAMEWORKS.values_at(*stack)).compact.join("; ")
+
+    def run_examples(stack)
+      (stack.empty? ? RUNS.values_at("node", "python", "ruby", "swift", "rust", "go") : RUNS.values_at(*stack)).compact.join(", ")
+    end
+
+    def compiled_section(stack)
+      return "" unless stack.empty? || stack.intersect?(COMPILED)
+
+      <<~TEXT
+        - Compiled stacks (Swift, Rust, Kotlin/Java, Go, C#) build the whole test target first, so one
+          missing type stops every test and hides every assertion. There, add the smallest stubs of the
+          new types and functions to the source so the suite builds: placeholder bodies that return
+          empty or default values, never ones that crash or trap (`fatalError`, `panic!`, `TODO()`).
+          Then the locked tests must pass and each new test must fail on its own assertion. Runeforge
+          rejects a plan whose tests don't compile.
+      TEXT
+    end
+
+    def node_section(stack)
+      return "" unless stack.empty? || stack.include?("node")
+
+      <<~TEXT
+        - Node: `node --test` with no arguments finds test/**/*.test.js (and .mjs, .cjs); or list the
+          files, `node --test test/*.test.js`. Never `node --test <directory>`: Node 22 loads the
+          directory as a module and runs nothing.
+      TEXT
+    end
+
+    # Words that say a step changes a screen. A step naming none gets #short_ui_section.
+    UI_WORDS = /\bUI\b|\bscreens?\b|\bpages?\b|\bbuttons?\b|\bforms?\b|\bcomponents?\b|data-testid|\bbrowser\b|\bclicks?\b|
+                \blayout\b|\bviews?\b|\bnavigation\b|\bmodal\b|\bdialog\b|\bstyles?\b|\bCSS\b|\bemails?\b/xi
+
+    def ui_hint?(input) = [input["title"], input["description"]].compact.join("\n").match?(UI_WORDS)
+
+    # The handoff the planner and coder leave for the agents after them (see Handoff). Runeforge
+    # checks every path, symbol and test name in it against the commit before keeping any of it.
+    def handoff_section(role)
+      own = if role == :planner
+              <<~JSON.chomp
+                {"requirements": [{"id": "the requirement's id from the brief, else a short name",
+                                   "status": "new" | "already_built" | "conflict",
+                                   "tests": ["test/file.test.js > the test's name"],
+                                   "code": [{"path": "server/x.js", "symbol": "createBooking", "note": "what it does, or what to build there"}],
+                                   "cites": ["README.md:65", "test/other.test.js > a test this step contradicts"]}],
+              JSON
+            else
+              <<~JSON.chomp
+                {"implemented": [{"id": "the requirement's id", "code": [{"path": "server/x.js", "symbol": "createBooking", "note": "what it does"}]}],
+              JSON
+            end
+      <<~TEXT
+        ## Handoff
+        Write `.runeforge/handoff.json` for the agents who build the next steps. Runeforge checks every path,
+        symbol and test name against the repository and keeps only what it finds; keep each note to one line.
+        #{own}
+         "facts": [{"key": "short-name", "kind": "convention" | "command" | "layout" | "gotcha",
+                    "text": "one or two sentences", "paths": ["test/helpers.js"]}],
+         "discovered": [{"title": "work outside this step that someone should do", "why": "...",
+                         "evidence": "path:line, or a command and what it printed"}]}
+        #{role == :planner ? handoff_conflict : ''}
+      TEXT
+    end
+
+    def handoff_conflict
+      <<~TEXT.chomp
+        If the step contradicts behaviour this project documents or tests (not a missing toolchain: that's
+        blocked.md), mark its requirements "conflict", cite the README lines and tests it contradicts, and
+        change nothing else: Runeforge stops the step for a person to decide.
+      TEXT
+    end
+
+    def short_ui_section
+      "## User interface changes\nThis step names no screen. If it does change what a person sees or does, write " \
+        "`.runeforge/ui.md` naming each screen, how to reach it and what to check there, for a UX reviewer who opens it in a browser.\n"
     end
 
     # The planner's instructions for steps that change what people see or do: a UI brief for the
@@ -159,8 +280,8 @@ module Runeforge
 
     # The UX reviewer's prompt (Roles::UxReviewer). browser: the project's browser services and the
     # app container's name on their network; changed: the files this step changed.
-    def ux_review(task:, brief:, browser:, changed:, run_command: nil, setup_command: nil)
-      <<~PROMPT
+    def ux_review(task:, brief:, browser:, changed:, run_command: nil, setup_command: nil, earlier: nil)
+      prompt = <<~PROMPT
         You are the UX reviewer for task #{task[:id]}: #{task[:title]}.
         The step's code is in this workspace. Its tests pass and its code has been reviewed; your job is
         to use it the way a person would, in a real browser, and judge whether it's good enough to ship.
@@ -219,6 +340,7 @@ module Runeforge
         browser: then set "browser" to "none", review the rendered HTML and templates instead, and say so
         in the summary.
       PROMPT
+      earlier.to_s.strip.empty? ? prompt : "#{prompt}\n#{earlier.strip}\n"
     end
 
     def ux_browser_section(browser, run_command, setup_command)
@@ -281,7 +403,7 @@ module Runeforge
     # continuing: the coder carries on the conversation the planner (or its previous attempt) had,
     # so it already knows the project and the spec, and the prompt says what changed instead.
     def code(task:, attempt:, locked_paths:, test_command:, feedback: nil, run_command: nil, run_docs_required: false, apple: nil,
-             continuing: false, setup_command: nil, ui_brief: nil)
+             continuing: false, setup_command: nil, ui_brief: nil, brief: nil)
       sections = [<<~PROMPT]
         #{continuing ? continuing_note(task, attempt) : coder_intro(task, attempt)}
 
@@ -299,10 +421,13 @@ module Runeforge
         Do not change anything under `runeforge/` (the project's plan inbox); such changes are rejected.
         Do not put anything else in `.runeforge/`: it's Runeforge's scratch space and is never committed.
         Do not commit. Leave your changes in the working tree.
+        When you finish, end with at most three lines: what you changed and anything a reviewer must know.
 
+        #{handoff_section(:coder)}
         #{working_section}
       PROMPT
       sections << "#{setup_section(setup_command)}\n" unless setup_command.to_s.strip.empty?
+      sections << "#{brief.strip}\n" unless brief.to_s.strip.empty?
       sections << "#{coder_ui_section(ui_brief)}\n" unless ui_brief.to_s.strip.empty?
       sections << "#{apple_section(apple)}\n" if apple
       sections << "## Feedback from the previous attempt\n#{feedback}\n" if feedback && !feedback.to_s.strip.empty?

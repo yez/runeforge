@@ -26,7 +26,7 @@ module Runeforge
 
       Commit a markdown plan to `inbox/` and Runeforge builds it: plans run one at a time, in the
       order they arrived on this branch (not by file name). A task list's unchecked items become
-      tasks: one per item, or groups of about three in a longer list (`steps:` below); any other
+      tasks, one per item; indented lines and sub-bullets belong to the item above them. Any other
       file is one task. Finished plans move to `done/` with a short summary.
 
       Optional front matter:
@@ -37,7 +37,7 @@ module Runeforge
       after: reports-page      # wait until inbox/reports-page.md is done
       replaces: csv-export-v1  # unlock that plan's acceptance tests, to change or reverse it
       max_attempts: 3
-      steps: each              # one task per item (default auto; or a number: at most N tasks)
+      steps: 3                 # at most 3 tasks, items grouped in order (default: one task per item)
       ux_review: auto          # review UI changes in a browser: auto (when a step changes the UI), always, never
       ---
       ```
@@ -53,6 +53,8 @@ module Runeforge
       - Edit a queued plan and it keeps its place; edit a running one and it restarts.
       - Edit a failed plan to try again (it goes to the back of the queue).
       - Delete a plan to drop or cancel it.
+      - Runeforge may add `found-*.md` plans: work its agents found outside a step, with the evidence,
+        queued after the plan they came from. Delete one to drop it.
       - Coding agents can't change anything in this folder.
 
       `runeforge inbox` shows the queue. Background workers (`runeforge up`) build the plans.
@@ -344,6 +346,7 @@ module Runeforge
       # step: 0 for a new plan; a retried plan starts again at the step that failed (see #retry).
       update(plan, status: "running", steps: parsed.steps.size, step: plan[:step].to_i, reason: nil,
                    inherited: JSON.generate(carried_tests(repo, plan, base).keys))
+      env.ledger.plan_items!(repo: repo[:name], plan:, parsed:)
       start_step(repo, plans.where(id: plan[:id]).first, base)
     rescue Error => e
       done = e.message.include?("already checked off")
@@ -372,6 +375,8 @@ module Runeforge
         deadline_at: budgets["max_task_minutes"] && (Runeforge.now + (budgets["max_task_minutes"] * 60))
       )
       ids = (JSON.parse(plan[:task_ids] || "[]") + [task[:id]]).uniq
+      root = Ledger.root_id(plan)
+      env.ledger.claim!(name, parsed.step_items.fetch(plan[:step], []).map { |index| "#{root}.t#{index + 1}" }, task[:id])
       update(plan, status: "running", task_id: task[:id], task_ids: JSON.generate(ids), reason: nil)
     end
 

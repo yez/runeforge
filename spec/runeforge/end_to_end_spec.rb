@@ -391,6 +391,23 @@ RSpec.describe "Ticket to pull request" do
         expect(git("show", "main:lib/greeting.txt")).to eq("Hello, Runeforge\n")
       end
 
+      it "merges after ux_review.max_rounds rejections with the findings as notes, and keeps them as facts" do
+        review = <<~SH
+          printf '{"browser": "selenium", "issues": [{"severity": "major", "screen": "Greeting", "problem": "The text overflows", "fix": "Wrap it"}]}' > .runeforge/ux_review.json
+        SH
+        env = ui_env(review:)
+        create(env)
+        task = drive(env, "T-1", until_status: "done")
+
+        expect(env.tasks.messages("T-1").count { |m| m.type == "ux.verdict" }).to eq(2)
+        merge = env.tasks.messages("T-1").find { |m| m.type == "integrate.request" }
+        expect(merge.payload["ux_notes"]).to eq(["[major] Greeting: The text overflows Fix: Wrap it"])
+        expect(Runeforge::Build.describe(merge, merging: true)).to include("UX review limit reached", "The text overflows")
+        expect(task[:attempts]).to eq(2)
+        expect(env.ledger.facts.where(kind: "ux").first[:text]).to eq("Greeting: The text overflows Fix: Wrap it")
+        expect(File.read(File.join(tmpdir, "ux-prompt"))).to include("## Earlier UX findings in this project")
+      end
+
       it "merges without a UX review when the plan has no UI changes" do
         env = ui_env(review: "exit 1", plan_ui: false)
         create(env)

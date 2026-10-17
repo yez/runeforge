@@ -51,13 +51,12 @@ runeforge plan.md -d ~/code/my-app                              # iterate on an 
   checkout alone.
 - **Task lists:** each unchecked top-level list item (`- item`, `- [ ] item`, `1. item`) is one
   step, built in order, each on its own branch merged before the next starts (on one shared
-  branch with `manual_merge: true`); indented lines belong to the item above, checked
+  branch with `manual_merge: true`); indented lines and nested sub-bullets belong to the item above, checked
   items (`- [x]`) are skipped, and the rest of the file is passed along as context. A file
   without at least two list items, or a prompt, is one step. A failed step stops the run.
-- **Steps per task:** a plan of up to three steps runs one task per step. A longer plan runs its
-  steps in groups of about three (9 steps become 3 tasks), because every task starts new
-  planner and coder sessions that learn the project again. Front matter `steps: each` keeps one
-  task per step; `steps: N` makes at most N tasks.
+- **Steps per task:** each step (one ticket) is one task, so every task has one clear deliverable
+  that the ledger tracks (see "Ledger" below). Front matter `steps: N` makes at most N tasks by
+  grouping consecutive steps.
 - **Each step:** the planner writes a spec, acceptance tests (which become locked) and any
   scaffolding needed to run them, and says in `.runeforge/project.json` how to run the tests,
   how to run the project (`run_command`) and which tools they need. The coder then works until
@@ -69,8 +68,11 @@ runeforge plan.md -d ~/code/my-app                              # iterate on an 
 - **Contested tests:** a coder that finds a locked test can't pass as written says why in
   `.runeforge/contest.md`, and the step goes straight back to the planner.
 - **Lessons:** what went wrong in a step (a rejected plan, contested or wrong tests, a failed step) is
-  remembered, and the planner of a similar later step sees the closest few as known pitfalls.
-  They're matched by shared words, or by meaning with `memory.embedding_model`.
+  remembered, and the planner of a similar later step sees the closest few as known pitfalls: its
+  own plan's, and other plans' only when they match closely (`memory.lesson_bar`). They're matched
+  by shared words, or by meaning with `memory.embedding_model`.
+- **Ledger:** each step hands the next one what it learned, so later agents don't re-learn the
+  project or rebuild what's done (see "Ledger" below).
 - **Runnable results:** an existing project keeps its own launch method; Runeforge records it
   and changes nothing about it. A new project gets a README with a How to run section (npm
   projects an `npm start` script), and the reviewer rejects work whose docs don't contain the
@@ -256,6 +258,8 @@ the next run; background workers wait a minute and try again.
 | `runeforge config edit` | Opens `~/.runeforge/runeforge.yml` in `$VISUAL`/`$EDITOR` (creating it if needed), then checks it |
 | `runeforge config path` / `config show` | The config file in use / the settings in effect, defaults included |
 | `runeforge inbox [REPO] [--poll] [--all]` | The plans queued from each project's `runeforge/inbox/` |
+| `runeforge items [REPO] [--plan NAME] [--tree]` / `runeforge show ITEM` | The ledger's plans, tickets and requirements; one item's links, code and tests (see Ledger) |
+| `runeforge context index REPO` / `context search REPO QUERY` | Index a repository's code; show what the brief's code map would hand an agent |
 | `runeforge build -d DIR [--retry]` / `runeforge resume -d DIR [--retry]` | Builds DIR's inbox plans in the foreground; `--retry` retries the failed ones |
 | `runeforge doctor -d DIR` | Checks that DIR's agents and tests can run (see Checking the build environment) |
 | `runeforge demo` | Dry-run agents forever, plus the dashboard; no LLM, git or network |
@@ -377,7 +381,7 @@ runeforge/
   branch: the position of the commit that added each file, following renames. File names only
   break ties, and file dates are never used.
 - **Plans:** same format as `runeforge plan.md`: unchecked task-list items become tasks (one per
-  item, or groups of about three in plans longer than three steps; see `steps:`), each on its
+  item; see `steps:`), each on its
   own branch and merged before the next; any other file is one task. The last step's merge
   also moves the plan to `done/`.
 - **Front matter** (optional): `after: other-plan` waits until that plan is done;
@@ -452,6 +456,77 @@ Without a sandbox the agents run on your machine with full permissions (Claude C
 `--dangerously-skip-permissions`, Codex without its own sandbox), so they can build, test and run
 the simulator, and could run any other command as you. Use it only for projects you'd trust an
 agent with.
+
+## Ledger
+
+Runeforge keeps a ledger in its database of what each step is for and what earlier steps left
+for it. Agents never write to it: they read a brief built from it and leave a handoff file, and
+Runeforge checks every claim against git before keeping it.
+
+- **Items:** when an inbox plan starts, it becomes a plan item, one ticket per task-list item
+  (each its own step), and a requirement per sub-bullet. A step claims its ticket; a ticket has
+  one running owner, and a failed step gives it back for the retry.
+- **Links and anchors:** the exact identifiers in a ticket (routes like `GET /api/x/:id`,
+  `data-testid` values, file paths, symbols, snake_case fields) are its anchors. A new plan's
+  tickets that share them with another plan's are linked as `duplicates`, `overlaps` or `extends`
+  (finished work it says it changes), shown in the brief so a step builds on what's done instead
+  of again. Plans are also linked by `blocks` (ticket order), `supersedes` (`replaces:`),
+  `built-by`, `discovered-from` and `conflicts-with`.
+- **The brief:** before the planner (and a coder that doesn't continue the planner's session)
+  starts, Runeforge writes a brief into its prompt, within `ledger.brief_chars`: the step's
+  requirements with their ids and status, related work, a code map with the best few chunks of
+  code inline (from the code index below), the locked tests that already pin nearby behaviour,
+  and facts earlier steps learned. The full ranked map and its chunks go to `.runeforge/context/`.
+  The UX reviewer gets the project's earlier UX findings, to check they aren't back.
+- **Handoffs:** the planner and the coder end by writing `.runeforge/handoff.json`: which tests
+  pin each requirement, where its code is (path, symbol, a one-line note), facts (conventions,
+  commands, layout, gotchas) and work found outside the step. Paths must exist at the commit,
+  symbols and test names must be in those files; the rest is dropped. At merge the step's items
+  close, the files it changed get pointers, older pointers to those files go stale, and its locked
+  tests become coverage, with their names read from the files.
+- **Already built:** when every requirement of a step was built by an earlier one (its handoff
+  said so and named tests, and those tests passed at merge), the step runs the suite once and
+  merges with no planner or coder session.
+- **Conflicts:** a planner that finds the step contradicts what the project documents or tests
+  marks it `conflict` with what it cites; the step stops with "needs a decision", isn't retried,
+  and isn't taken for a broken build environment.
+- **Discovered work:** work an agent found outside its step, with evidence (a file and line that
+  exist, or a command), is committed with the step as `runeforge/inbox/found-*.md` with
+  `after:` the current plan, so it queues behind it. It's dropped if the ledger already has it;
+  at most `ledger.max_discovered` per plan; and a plan that was itself discovered work doesn't
+  queue more (those wait as items, listed by `runeforge items`). Delete the file to drop it.
+- **UX findings:** become facts later coders see first time; after `ux_review.max_rounds`
+  rejected reviews a step merges with what's left as notes instead of looping.
+- **Upkeep:** facts are kept by key (a repeat counts as a confirmation), at most
+  `ledger.max_facts` per project, least used first out; closed items of plans more than
+  `ledger.compact_after_plans` back keep only their title, close reason, links and pointers.
+
+`runeforge items [REPO] [--plan NAME] [--tree]` lists the ledger; `runeforge show ITEM` shows an
+item's text, owner, anchors, links, code pointers and covering tests.
+
+**Code index:** a project's code is split into chunks (a function, a route handler, a component,
+a test block) once per file version, keyed by git object id, so each commit only adds the files
+it changed. The brief's search ranks exact anchors first, then the ledger's pointers for related
+items, then meaning (with an embedding model), then words (BM25), and pulls in one hop of
+imports: a chunk's tests and helpers. It all runs on the host; the sandbox only ever gets text.
+`runeforge context index REPO` indexes a repository and `runeforge context search REPO "query"`
+shows what an agent would be handed.
+
+Embeddings are optional. Without `memory.embedding_model` the index searches by anchors and
+words. For a model on this machine (free, and usable with a Claude subscription, which can't make
+embeddings), run [Ollama](https://ollama.com) and `ollama pull nomic-embed-text`, then set:
+
+```yaml
+memory:
+  embedding_provider: ollama
+  embedding_model: nomic-embed-text
+  # embedding_url: http://127.0.0.1:11434   # the default
+```
+
+Ollama runs on the host (on a Mac, with the GPU); it's never exposed to the sandbox, whose agents
+could otherwise call its API. `runeforge doctor` checks the model answers, and if it doesn't, the
+index falls back to words with a warning instead of failing. Hosted models work through
+ruby_llm with `embedding_provider` and `embedding_key_env`, as for lessons.
 
 ## Embedding
 

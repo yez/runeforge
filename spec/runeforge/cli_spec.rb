@@ -29,6 +29,21 @@ RSpec.describe Runeforge::CLI do
     expect(output).to match(/integrator\s+→ supervisor\s+integrate\.done/)
   end
 
+  it "lists the ledger's items and shows one, with the code and tests the step left" do
+    expect(cli("items", "--tree")).to include("T-1.t1  done [T-1]  Greet", "r1  done  Greet")
+    shown = cli("show", "T-1.t1")
+    expect(shown).to include("T-1.t1 (ticket): Greet", "status: done, owned by T-1 (built by T-1", "code:", "lib/greeting.txt (implements, diff)",
+                             "tests:", "test/greeting_test.sh")
+    expect { cli("show", "nope") }.to raise_error(SystemExit).and output(/no item nope/).to_stderr
+  end
+
+  it "indexes and searches a repository's code" do
+    config = File.join(tmpdir, "conf.yml")
+    File.write(config, YAML.dump("home" => env.home))
+    expect(cli("context", "index", "demo", "-c", config)).to match(/demo at \h{7}: \d+ files, \d+ chunks .*no embedding model/)
+    expect(cli("context", "search", "demo", "test run status", "-c", config)).to include("test/run.sh")
+  end
+
   it "lists tasks, filtered by status" do
     expect(cli("tasks", "--status", "done")).to include("T-1", "done", "Greet")
     expect(cli("tasks", "--status", "failed")).not_to include("T-1")

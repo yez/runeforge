@@ -56,7 +56,11 @@ module Runeforge
       raise Error, "the plan's front matter is not valid YAML: #{e.message}"
     end
 
-    KEYS = %w[title after replaces max_attempts steps ux_review].freeze
+    # discovered_from: written by Runeforge on a plan it queued from work an agent found (see
+    # Ledger#discoveries); such a plan's own findings wait for a person instead of queueing.
+    KEYS = %w[title after replaces max_attempts steps ux_review discovered_from].freeze
+    # The keys people write (discovered_from is Runeforge's own).
+    PUBLIC_KEYS = (KEYS - %w[discovered_from]).freeze
     # ux_review: auto (the planner decides whether a step changes the UI), always or never.
     UX_REVIEW = %w[auto always never].freeze
     # Names people reach for that no spell checker would map to the real key.
@@ -71,7 +75,8 @@ module Runeforge
         "replaces" => names.call(data["replaces"]),
         "max_attempts" => data["max_attempts"],
         "steps" => data["steps"].is_a?(String) ? data["steps"].strip.downcase : data["steps"],
-        "ux_review" => ux_review(data["ux_review"])
+        "ux_review" => ux_review(data["ux_review"]),
+        "discovered_from" => data["discovered_from"]&.to_s&.strip
       }
       bad = (meta["after"] + meta["replaces"]).grep_v(NAME)
       raise Error, "not a plan name in the front matter: #{bad.join(', ')}" if bad.any?
@@ -102,8 +107,8 @@ module Runeforge
     # A misspelled key would otherwise be dropped without a word (`retries: 3` sets nothing).
     def self.unknown_keys(keys)
       (keys.map(&:to_s) - KEYS).map do |key|
-        suggestion = SYNONYMS[key.downcase] || DidYouMean::SpellChecker.new(dictionary: KEYS).correct(key).first
-        "unknown front matter key `#{key}` (ignored)#{suggestion ? "; did you mean `#{suggestion}`?" : "; known keys: #{KEYS.join(', ')}"}"
+        suggestion = SYNONYMS[key.downcase] || DidYouMean::SpellChecker.new(dictionary: PUBLIC_KEYS).correct(key).first
+        "unknown front matter key `#{key}` (ignored)#{suggestion ? "; did you mean `#{suggestion}`?" : "; known keys: #{PUBLIC_KEYS.join(', ')}"}"
       end
     end
 
@@ -147,16 +152,22 @@ module Runeforge
       steps
     end
 
-    # Top-level list items become steps; indented lines under an item belong to it. Checked
-    # items ("- [x] ...") are already done and skipped. Fewer than two items means "one step".
+    # Top-level list items become steps; indented lines under an item belong to it, nested list
+    # items included ("  - a sub-bullet" is part of its ticket, not a step of its own). The first
+    # item's indent is the top level. Checked items ("- [x] ...") are already done and skipped.
+    # Fewer than two items means "one step".
     def self.list_steps(text, checked: [])
       items = []
       current = nil
+      top = nil
       text.each_line(chomp: true) do |line|
-        if (match = line.match(ITEM))
+        indent = line[/\A[ \t]*/].gsub("\t", "    ").size
+        match = line.match(ITEM)
+        if match && (top.nil? || indent <= top)
+          top ||= indent
           current = { done: match[1].to_s.casecmp?("x"), lines: [match[2]] }
           items << current
-        elsif current && (line.strip.empty? || line.start_with?("  ", "\t"))
+        elsif current && (line.strip.empty? || indent > top.to_i)
           current[:lines] << line
         else
           current = nil
@@ -172,33 +183,32 @@ module Runeforge
       open
     end
 
-    # With `steps: auto` (the default), plans of up to this many steps run one task per step, and
-    # longer plans run their steps in groups of about this many. Every task is a fresh planner and
-    # coder session that has to learn the project again, so a 9-step plan built as 3 tasks cost
-    # half as much as built as 9, with the same result.
-    AUTO_GROUP = 3
-
-    # Joins consecutive steps into tasks. mode: "auto" (see AUTO_GROUP), "each" (one task per
-    # step), or a whole number N (at most N tasks). Groups are as even as they can be, in order.
+    # Joins consecutive steps into tasks. mode: "auto" or "each" (the default: one task per step,
+    # so each task has one ticket's deliverable and the ledger tracks it on its own), or a whole
+    # number N (at most N tasks, as even as they can be, in order).
     def self.group(steps, mode)
-      count = case mode
-              when "each" then steps.size
-              when Integer then [mode, steps.size].min
-              else steps.size <= AUTO_GROUP ? steps.size : (steps.size.to_f / AUTO_GROUP).ceil
-              end
-      return steps if count >= steps.size
-
-      size, extra = steps.size.divmod(count)
-      start = 0
-      Array.new(count) do |index|
-        part = steps[start, size + (index < extra ? 1 : 0)]
-        start += part.size
+      group_indexes(steps.size, mode).map do |indexes|
+        part = steps.values_at(*indexes)
         next part.first if part.size == 1
 
         head = part.first.title
         more = " (+#{part.size - 1} more)"
         title = head.size + more.size > 72 ? "#{head[0, 71 - more.size]}…#{more}" : "#{head}#{more}"
         Step.new(title:, body: part.map(&:body).join("\n\n"))
+      end
+    end
+
+    # Which of the plan's items (its tickets, in order) each task builds: [[0], [1], [2]], or
+    # [[0, 1], [2]] with steps: 2.
+    def self.group_indexes(size, mode)
+      count = mode.is_a?(Integer) ? [mode, size].min : size
+      return Array.new(size) { |index| [index] } if count >= size
+
+      per, extra = size.divmod(count)
+      start = 0
+      Array.new(count) do |index|
+        length = per + (index < extra ? 1 : 0)
+        (start...(start + length)).to_a.tap { start += length }
       end
     end
 
@@ -211,8 +221,13 @@ module Runeforge
       checked = []
       steps = list ? (self.class.heading_steps(text, checked:) || self.class.list_steps(text, checked: checked.clear)) : nil
       @checked_steps = steps.nil? || steps.empty? ? [] : checked
-      @steps = steps.nil? || steps.empty? ? [Step.new(title: @title, body: text.strip)] : self.class.group(steps, meta["steps"] || "auto")
+      # items: the plan's tickets before steps: N groups them; step_items: which items each step has.
+      @items = steps.nil? || steps.empty? ? [Step.new(title: @title, body: text.strip)] : steps
+      @step_items = self.class.group_indexes(@items.size, meta["steps"] || "auto")
+      @steps = steps.nil? || steps.empty? ? @items : self.class.group(steps, meta["steps"] || "auto")
     end
+
+    attr_reader :items, :step_items
 
     def multi_step? = steps.size > 1
 

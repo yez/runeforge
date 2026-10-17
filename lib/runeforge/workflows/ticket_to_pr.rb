@@ -13,6 +13,7 @@ module Runeforge
       on "plan.done" do |_task, msg|
         lock_paths!(msg)
         apply_project!(msg)
+        ledger { |l| l.record_plan!(task, msg.payload["handoff"], sha: msg.commit_sha) }
         update_task(head_sha: msg.commit_sha)
         # An earlier step already built this one and the whole suite passes on it: nothing to code.
         next send_to(:integrator, "integrate.request", sha: msg.commit_sha) if msg.payload["already_done"]
@@ -29,6 +30,10 @@ module Runeforge
       # tests, no test file matches test_globs, ...) goes back to it once with the reason, and with
       # why the step is being re-planned, if it is.
       on "plan.failed" do |task, msg|
+        if msg.payload["conflict"]
+          ledger { |l| l.conflict!(task, msg.payload["cites"], msg.payload["reason"]) }
+          next fail!(msg.payload["reason"])
+        end
         learn("plan", msg.payload["reason"]) if msg.payload["retryable"]
         if msg.payload["retryable"] && plan_requests < Supervisor::PLAN_ATTEMPTS
           carried = round_feedback
@@ -54,6 +59,7 @@ module Runeforge
       end
 
       on "code.done" do |_task, msg|
+        ledger { |l| l.record_code!(task, msg.payload["handoff"]) }
         send_to :tester, "test.request", sha: msg.commit_sha
       end
 
@@ -85,15 +91,22 @@ module Runeforge
       end
 
       # The plan changed the UI: a reviewer opened those screens in a browser (Roles::UxReviewer).
+      # Its findings become facts for later steps' coders. After ux_review.max_rounds rejected
+      # reviews the step merges anyway, with what's left as notes, instead of looping.
       on "ux.verdict" do |_task, msg|
+        ledger { |l| l.record_ux!(task, msg.payload["issues"]) }
         if msg.payload["approved"]
           send_to :integrator, "integrate.request", sha: msg.commit_sha
+        elsif ux_rejections >= ux_round_limit
+          send_to :integrator, "integrate.request", sha: msg.commit_sha,
+                                                    ux_notes: Array(msg.payload["reasons"]).drop(1).first(10)
         else
           retry_or_fail(msg.payload)
         end
       end
 
       on "integrate.done" do |_task, msg|
+        close_in_ledger!(msg)
         complete!(external_pr_url: msg.payload["pr_url"])
       end
 

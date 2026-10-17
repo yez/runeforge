@@ -27,7 +27,8 @@ module Runeforge
       def review(workspace, sha)
         prompt = Prompts.ux_review(task:, brief: task[:ui_brief].to_s, browser: browser,
                                    changed: env.repos.changed_files(task[:repo], from: task[:base_sha], to: sha).first(200),
-                                   run_command: repo[:run_command], setup_command: repo[:setup_command])
+                                   run_command: repo[:run_command], setup_command: repo[:setup_command],
+                                   earlier: earlier_findings)
         run = run_agent(workspace, prompt, setup: repo[:setup_command])
         updates = usage_updates(run.usage)
         shots = keep_screenshots(workspace)
@@ -38,6 +39,14 @@ module Runeforge
         return skipped("the UX reviewer wrote no #{Workspace::META_DIR}/#{RESULT}", run, shots, updates) unless report
 
         verdict(report, run, shots, updates, sha)
+      end
+
+      def earlier_findings
+        return nil unless env.ledger.enabled?
+
+        Brief.new(env, task:, repo:, input: {}).ux
+      rescue StandardError
+        nil
       end
 
       # A review that couldn't run doesn't block the merge (the tests and the deterministic review

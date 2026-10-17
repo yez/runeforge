@@ -38,8 +38,17 @@ module Runeforge
                    model: vector && @config["embedding_model"], embedding: vector && Sequel.blob(vector.pack("e*")))
     end
 
+    # Word-matched lessons from another plan must score at least this (see #by_words). Shared
+    # words alone matched a guests step with series and closures lessons on Courtside: those
+    # scored 2 to 2.7, so the bar sits above them.
+    OTHER_PLAN_BAR = 3.0
+
     # The lessons most like the step, best first: from this repo, other than the step's own task.
-    def pitfalls(repo:, query:, exclude_task: nil, limit: @config.fetch("max_lessons", 3))
+    # plan: the step's plan ("plan-d-money-p4"): its own lessons, and Runeforge's rejections of a
+    # plan (kind "plan": a test command that runs nothing, ...), which hold for the whole project,
+    # count by the usual match; another plan's contested tests and failures must clear
+    # OTHER_PLAN_BAR (memory.lesson_bar).
+    def pitfalls(repo:, query:, exclude_task: nil, limit: @config.fetch("max_lessons", 3), plan: nil)
       return [] unless enabled?
 
       scope = table.where(repo:)
@@ -47,8 +56,10 @@ module Runeforge
       rows = scope.order(Sequel.desc(:id)).limit(SCAN).all
       return [] if rows.empty?
 
-      vector = rows.any? { |row| row[:embedding] } ? embed(query) : nil
+      vector = rows.any? { |row| row[:embedding] } ? embed(query, kind: :query) : nil
       scored = vector ? by_meaning(rows, vector) : by_words(rows, query)
+      bar = @config.fetch("lesson_bar", OTHER_PLAN_BAR).to_f
+      scored = scored.select { |row, score| vector || !plan || own_plan?(row, plan) || row[:kind] == "plan" || score >= bar }
       chosen = []
       scored.sort_by { |row, score| [-score, -row[:id]] }.first(limit).each do |row, _score|
         break if (chosen.sum { |c| c[:text].size } + row[:text].size) > MAX_CHARS
@@ -60,7 +71,12 @@ module Runeforge
 
     def self.words(text) = text.to_s.downcase.scan(/[a-z0-9_.\/-]{3,}/).reject { |word| STOPWORDS.include?(word) }.uniq
 
+    # The plan a step task belongs to: "plan-d-money-p4-s2-r2" -> "plan-d-money-p4".
+    def self.plan_of(task_id) = task_id.to_s[/\A.+?-p\d+(?=-s\d+|-r\d+|\z)/] || task_id.to_s
+
     private
+
+    def own_plan?(row, plan) = row[:task_id] && self.class.plan_of(row[:task_id]) == plan
 
     # Rare shared words count most (inverse document frequency); a lesson must share two.
     def by_words(rows, query)
@@ -94,23 +110,15 @@ module Runeforge
     end
 
     # Embedding is optional: without a model, or when the call fails, lessons are matched by words.
-    def embed(text)
+    # Through Embedder, so lessons and the code index share one model (Ollama included).
+    def embed(text, kind: :document)
       model = @config["embedding_model"]
       return nil if model.to_s.empty?
+      return @embedder.call(text, model) if @embedder
 
-      (@embedder || method(:ruby_llm_embed)).call(text, model)
+      Embedder.new(@config).embed([text], kind:)&.first
     rescue StandardError
       nil
-    end
-
-    # memory.embedding_provider names the ruby_llm provider (openai, gemini, ...), and
-    # memory.embedding_key_env the host variable holding its API key.
-    def ruby_llm_embed(text, model)
-      require "ruby_llm"
-      provider = @config["embedding_provider"].to_s
-      key = ENV.fetch(@config["embedding_key_env"].to_s, nil)
-      context = RubyLLM.context { |config| config.public_send(:"#{provider}_api_key=", key) if key && !provider.empty? }
-      context.embed(text, model:, provider: provider.empty? ? nil : provider.to_sym).vectors
     end
   end
 end
