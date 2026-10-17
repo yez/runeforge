@@ -10,6 +10,8 @@ module Runeforge
     class Integrator < Base
       def call
         sha = bookkeeping(msg.commit_sha || task[:head_sha])
+        return nothing_to_merge(sha) if !task[:merged_sha] && env.repos.contains?(task[:repo], sha)
+
         env.repos.push(task[:repo], branch: task[:branch], sha:)
         pr_url = task[:external_pr_url] || env.github.find_or_create_pull(
           repo_url: repo[:url], head: task[:branch], base: repo[:base_branch], title: pull_title, body: pull_body
@@ -26,6 +28,14 @@ module Runeforge
       end
 
       private
+
+      # A step an earlier one already built, with nothing of its own (see Roles::Planner): its
+      # commit is already in the base branch, so there's no branch to push or pull request to open.
+      def nothing_to_merge(sha)
+        result("integrate.done", { "branch" => task[:branch], "base" => repo[:base_branch], "merged" => true,
+                                   "merged_sha" => sha, "warnings" => [] },
+               commit_sha: sha, task_updates: { merged_sha: sha, head_sha: sha })
+      end
 
       # Returns the base branch commit that took in the work, or nil when it wasn't merged.
       def merge(sha, warnings)

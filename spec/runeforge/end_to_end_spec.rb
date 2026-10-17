@@ -194,6 +194,63 @@ RSpec.describe "Ticket to pull request" do
       expect(task[:attempts]).to eq(1)
     end
 
+    describe "a step an earlier one already built" do
+      it "merges with no coding when the planner says so and the tests pass" do
+        plan = "printf 'Closures already exist: server/closures.js, test/closures_test.sh.\\n' > .runeforge/already_done.md\n"
+        # Without the inbox there are no bookkeeping commits, so the step has nothing of its own to merge.
+        env = build_env("agent" => { "command" => "sh #{fake_agent(plan:, code: "touch #{tmpdir}/coded")}" },
+                        "inbox" => { "enabled" => false }).tap { |e| add_repo(e, url: origin) }
+        create(env)
+        base = env.tasks.find!("T-1")[:base_sha]
+        task = drive(env, "T-1", until_status: %w[done failed])
+
+        expect(task).to include(status: "done", merged_sha: base, attempts: 0)
+        expect(task[:spec]).to include("Closures already exist")
+        expect(env.tasks.messages("T-1").map(&:type)).to eq(%w[task.created plan.request plan.done integrate.request integrate.done])
+        expect(File.exist?(File.join(tmpdir, "coded"))).to be(false)
+        expect(git("rev-parse", "main").strip).to eq(base)
+        expect(env.github.calls).to be_empty
+        plan_done = env.tasks.messages("T-1").find { |m| m.type == "plan.done" }
+        expect(Runeforge::Build.describe(plan_done, merging: true)).to start_with("✓ already built by an earlier step; the tests pass")
+      end
+
+      it "locks and merges the passing tests it adds" do
+        plan = <<~SH
+          mkdir -p test && printf 'true\\n' > test/closures_test.sh
+          printf 'Built by step 1.\\n' > .runeforge/already_done.md
+        SH
+        env = env_with(code: "touch #{tmpdir}/coded", plan:)
+        create(env)
+        task = drive(env, "T-1", until_status: %w[done failed])
+
+        expect(task).to include(status: "done", attempts: 0)
+        expect(JSON.parse(task[:locked_paths]).keys).to eq(["test/closures_test.sh"])
+        expect(git("show", "main:test/closures_test.sh")).to eq("true\n")
+        expect(File.exist?(File.join(tmpdir, "coded"))).to be(false)
+      end
+
+      it "sends it back to the planner when the tests fail, or it changed more than tests" do
+        plan = <<~SH
+          if [ ! -f #{tmpdir}/planned ]; then
+            touch #{tmpdir}/planned
+            mkdir -p test lib && printf 'false\\n' > test/closures_test.sh && printf 'x\\n' > lib/closures.txt
+          else
+            mkdir -p test && printf 'false\\n' > test/closures_test.sh
+          fi
+          printf 'Built by step 1.\\n' > .runeforge/already_done.md
+        SH
+        env = env_with(code: "touch #{tmpdir}/coded", plan:)
+        create(env)
+        task = drive(env, "T-1", until_status: %w[done failed])
+
+        failures = env.tasks.messages("T-1").select { |m| m.type == "plan.failed" }.map { |m| m.payload["reason"] }
+        expect(failures[0]).to include("you wrote .runeforge/already_done.md but also changed lib/closures.txt")
+        expect(failures[1]).to include("you wrote .runeforge/already_done.md, but `sh test/run.sh` fails on your plan " \
+                                       "(exit status 1), so the step isn't built yet", "FAIL test/closures_test.sh")
+        expect(task[:status]).to eq("failed")
+      end
+    end
+
     it "fails a plan whose test command doesn't run any tests" do
       plan = <<~SH
         #{Helpers::PLAN_GREETING}

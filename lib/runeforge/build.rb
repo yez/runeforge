@@ -452,7 +452,13 @@ module Runeforge
       sha = msg.commit_sha.to_s[0, 7]
       case msg.type
       when "plan.request" then "· planning"
-      when "plan.done" then ["✓ planned: #{plural(payload['locked_paths'].size, 'test file')} locked (#{sha})", *skipped_note(payload)].join("\n  ")
+      when "plan.done"
+        if payload["already_done"]
+          added = payload["locked_paths"].empty? ? "" : ", #{plural(payload['locked_paths'].size, 'test file')} added"
+          "✓ already built by an earlier step; the tests pass#{added} (#{sha})"
+        else
+          ["✓ planned: #{plural(payload['locked_paths'].size, 'test file')} locked (#{sha})", *skipped_note(payload)].join("\n  ")
+        end
       when "plan.failed" then "✗ planning failed: #{payload['reason']}"
       when "deps.check" then "· checking tools: #{Array(payload['tools']).join(', ')}"
       when "deps.ready" then "✓ tools available"

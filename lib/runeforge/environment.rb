@@ -102,7 +102,7 @@ module Runeforge
 
       devcontainer = project && project[:devcontainer] && JSON.parse(project[:devcontainer])
       devcontainer = devcontainer.merge("services" => []) if devcontainer && !services
-      Sandbox.build(config["sandbox"].merge("mode" => sandbox_mode(project)), image:, devcontainer:)
+      Sandbox.build(config["sandbox"].merge("mode" => sandbox_mode(project)), image:, devcontainer:, project: project&.dig(:name))
     end
 
     def committer(repo_name)

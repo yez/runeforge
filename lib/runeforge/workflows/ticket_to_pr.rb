@@ -14,6 +14,9 @@ module Runeforge
         lock_paths!(msg)
         apply_project!(msg)
         update_task(head_sha: msg.commit_sha)
+        # An earlier step already built this one and the whole suite passes on it: nothing to code.
+        next send_to(:integrator, "integrate.request", sha: msg.commit_sha) if msg.payload["already_done"]
+
         tools = Array(msg.payload.dig("project", "tools"))
         if interactive? && tools.any?
           send_to :operator, "deps.check", sha: msg.commit_sha, tools:, resume: "code"

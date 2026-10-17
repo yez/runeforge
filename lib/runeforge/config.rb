@@ -127,10 +127,15 @@ module Runeforge
         "mode" => "docker",
         "image" => "runeforge/general:latest",
         "network" => "bridge",
-        "cpus" => 2,
+        # "auto": every CPU the container runtime has. Test suites run their files in parallel, and a
+        # 2-CPU cap made a Node suite take 48s instead of 16s.
+        "cpus" => "auto",
         "memory" => "4g",
         "pids" => 512,
-        "timeout_seconds" => 1800
+        "timeout_seconds" => 1800,
+        # Keep installed dependencies (node_modules) in a container volume per project instead of
+        # the workspace (see Sandbox::Container#dependency_mounts).
+        "dependency_volumes" => true
       },
       "agent" => {
         # The model, as "name" or "provider/name" (e.g. claude-sonnet-5-5, gemini-pro-latest, gpt-5,

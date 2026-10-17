@@ -73,11 +73,16 @@ module Runeforge
         - If this environment can't build or test the stack (its toolchain isn't here, e.g. an
           iOS or macOS app needs Xcode on a Mac), don't work around it: write the reason and what
           the project needs to `.runeforge/blocked.md`, change nothing else, and stop.
-        - Run test_command once before you finish and read its output. The new tests must be found
-          and run, and fail because the feature is missing (their assertions, or imports of code that
-          doesn't exist yet), not because the command can't find or load them. The output must name
-          your test cases: a runner crash reported as a single failing test (for example one "test"
-          named after a directory, or `Cannot find module`) means the command is wrong.
+        - Run only your new test files, not the whole suite: most runners take file paths
+          (`npx vitest run test/foo.test.js`, `node --test test/foo.test.js`, `python -m pytest tests/test_foo.py`,
+          `bundle exec rspec spec/foo_spec.rb`) or a filter (`swift test --filter`, `cargo test foo`,
+          `go test -run Foo`). The new tests must be found and run, and fail because the feature is
+          missing (their assertions, or imports of code that doesn't exist yet), not because the
+          runner can't find or load them. The output must name your test cases:
+          a runner crash reported as a single failing test (for example one "test" named after a
+          directory, or `Cannot find module`) means the command is wrong. Once you finish, Runeforge runs
+          test_command on your plan and sends it back if the tests don't build or run, so don't
+          run the whole suite to check the locked tests: you aren't changing the code they test.
         - Compiled stacks (Swift, Rust, Kotlin/Java, Go, C#) build the whole test target first, so one
           missing type stops every test and hides every assertion. There, add the smallest stubs of the
           new types and functions to the source so the suite builds: placeholder bodies that return
@@ -102,6 +107,13 @@ module Runeforge
           not read or write anything there (spec.md and project.json are for Runeforge only).
 
         #{ui_section(ux_review)}
+        ## When the step is already built
+        If the repository already does everything this step asks (an earlier step built it along
+        with its own), don't invent work or tests that can't fail. Write `.runeforge/already_done.md`
+        instead: for each requirement of the step, where the code does it and which test covers it.
+        You may add tests for requirements no existing test covers; they must pass now. Change
+        nothing else. Runeforge runs test_command, and if it passes the step is done without coding.
+
         ## Rules
         - Do not implement the step itself (compile-only stubs are fine). Another agent will, and it cannot change your test files.
         - Do not change anything under `runeforge/` (the project's plan inbox); such changes are rejected.

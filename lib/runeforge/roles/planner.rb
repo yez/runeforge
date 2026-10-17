@@ -60,6 +60,9 @@ module Runeforge
                         retryable: true)
         end
 
+        already_done = workspace.read_meta_text("already_done.md", max_bytes: 16_384).to_s.strip
+        return finish_already_done(workspace, run, updates, project, already_done) unless already_done.empty?
+
         commit = env.committer(task[:repo]).commit(
           patch: workspace.read_meta("changes.patch", max_bytes: limits["max_patch_bytes"]),
           parent: task[:base_sha], branch: task[:branch],
@@ -92,6 +95,41 @@ module Runeforge
                commit_sha: commit.sha, task_updates: updates)
       rescue Committer::PatchRejected, Workspace::UnsafeFile => e
         failed(e.message, run, updates || {}, retryable: true)
+      end
+
+      # The planner found an earlier step already built this one (.runeforge/already_done.md). It may
+      # add tests that pin that down, and nothing else; the whole suite must pass on the result,
+      # and then the step goes straight to merging (see the workflow's plan.done).
+      def finish_already_done(workspace, run, updates, project, reason)
+        patch = workspace.read_meta("changes.patch", max_bytes: limits["max_patch_bytes"])
+        sha = task[:base_sha]
+        locked = {}
+        unless patch.to_s.strip.empty?
+          commit = env.committer(task[:repo]).commit(
+            patch:, parent: task[:base_sha], branch: task[:branch],
+            message: Committer.message("runeforge: tests for #{task[:id]}, already built", trailers("Agent-Attempt" => "plan")),
+            validate: lambda do |changed|
+              others = changed.reject { |path| test_path?(path) }
+              next if others.empty?
+
+              raise Committer::PatchRejected, "you wrote .runeforge/already_done.md but also changed #{others.first(10).join(', ')}: " \
+                                              "a step that is already built may only add tests. Either plan the step as usual " \
+                                              "(without already_done.md) or change only test files"
+            end
+          )
+          sha = commit.sha
+          locked = commit.changed_paths.to_h { |path| [path, env.repos.oid(task[:repo], sha, path)] }
+        end
+        if RepoStore.command(repo, "test_command", project).empty?
+          return failed("you wrote .runeforge/already_done.md, but the project has no test command to show it: " \
+                        "plan the step with acceptance tests", run, updates, retryable: true)
+        end
+        if (problem = probe_tests(sha, project, must_pass: true))
+          return failed(problem, run, updates, retryable: true)
+        end
+
+        result("plan.done", { "spec" => reason, "already_done" => reason, "locked_paths" => locked, "project" => project,
+                              "log_path" => run.log_path }, commit_sha: sha, task_updates: updates)
       end
 
       # The UX review for this step: the plan's `ux_review:` (auto, always, never), unless
@@ -191,7 +229,8 @@ module Runeforge
       # Runs the plan's test command once on a clean export of the plan commit. Tests failing is
       # expected; tests not running at all means the command can never pass, and tests that don't
       # compile were never checked against the locked ones, so either fails the plan.
-      def probe_tests(sha, project)
+      # must_pass: the step is already built (see #finish_already_done), so every test must pass.
+      def probe_tests(sha, project, must_pass: false)
         # The commands the tester will use once this plan is recorded (see Supervisor#apply_project!).
         test_command = RepoStore.command(repo, "test_command", project)
         return nil if test_command.empty?
@@ -211,6 +250,11 @@ module Runeforge
           what = setup_failed == "syntax" ? "isn't valid shell" : "failed (exit status #{run.exit_code})"
           return "the setup command `#{setup[0, 300]}` #{what}, so no test ran. Fix setup_command; put anything longer " \
                  "than a line or two in a script committed with the plan and run that. Output: #{tail(output, 1500)}"
+        end
+        if must_pass && !run.success?
+          return "you wrote .runeforge/already_done.md, but `#{test_command}` fails on your plan " \
+                 "(#{run.timed_out ? 'timed out' : "exit status #{run.exit_code}"}), so the step isn't built yet. " \
+                 "Plan it as usual (without already_done.md), or fix the tests you added. Output: #{tail(output, 1500)}"
         end
         errors = run.exit_code.to_i.zero? ? [] : TestProbe.load_errors(output)
         return load_failed(errors) if errors.any?

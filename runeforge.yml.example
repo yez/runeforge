@@ -21,10 +21,11 @@ sandbox:
   mode: docker                         # docker | podman | none (agents run on this machine and may run any command as you)
   image: runeforge/general:latest      # rebuild after upgrading: docker build -t runeforge/general:latest -f docker/Dockerfile.general docker
   network: bridge
-  cpus: 2
+  cpus: auto                           # auto = every CPU docker/podman has; or a number to share the machine
   memory: 4g
   pids: 512
   timeout_seconds: 1800
+  dependency_volumes: true             # keep node_modules in a volume per project: faster tests, quicker installs
 
 agent:
   # The model, as "name" or "provider/name": claude-sonnet-5-5, gemini-pro-latest, gpt-5.6,
